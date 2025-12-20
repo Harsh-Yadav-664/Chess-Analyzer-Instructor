@@ -1,0 +1,1 @@
+# engine wrapper for Stockfish integration
