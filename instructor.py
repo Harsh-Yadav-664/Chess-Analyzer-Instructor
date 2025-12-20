@@ -21,16 +21,18 @@ class MoveGrade(IntEnum):
     BEST = 6
 
 
+# Threshold for detecting mate-level evaluation swings
+MATE_THRESHOLD = 50000
+
+
 @dataclass(frozen=True)
 class MoveAssessment:
     move_played: chess.Move
-    move_san: str               # Human-readable: "Nf3", "e4", "O-O"
     grade: MoveGrade
     eval_initial: int            # Centipawns (White's perspective)
-    eval_final: int             # Centipawns (White's perspective)
-    centipawn_loss: int         # How much player lost (from their perspective)
-    best_move: chess.Move
-    best_move_san: str          # Human-readable best move
+    eval_final: int              # Centipawns (White's perspective)
+    centipawn_loss: int          # How much player lost (from their perspective)
+    best_move: Optional[chess.Move]  # None if engine provided no PV
     was_best_move: bool
     explanation: str
 
@@ -45,9 +47,11 @@ def _calculate_centipawn_loss(
              Zero/Negative = player's position stayed same or improved
     """
     if player_is_white:
+        # White wants higher eval; loss = how much eval dropped
         return eval_initial - eval_final
     else:
-        return eval_initial - eval_final
+        # Black wants lower eval; loss = how much eval increased
+        return eval_final - eval_initial
 
 
 def _determine_grade(centipawn_loss: int, was_best_move: bool) -> MoveGrade:
@@ -71,6 +75,10 @@ def _determine_grade(centipawn_loss: int, was_best_move: bool) -> MoveGrade:
     # Clamp to 0 — improving the position shouldn't lower grade
     loss = max(0, centipawn_loss)
     
+    # Handle mate-level swings explicitly (walked into mate or missed mate)
+    if loss >= MATE_THRESHOLD:
+        return MoveGrade.BLUNDER
+    
     if loss <= 10:
         return MoveGrade.EXCELLENT
     elif loss <= 25:
@@ -86,57 +94,70 @@ def _determine_grade(centipawn_loss: int, was_best_move: bool) -> MoveGrade:
 def _generate_explanation(
     grade: MoveGrade,
     centipawn_loss: int,
-    best_move_san: str,
-    move_san: str
+    has_best_move: bool
 ) -> str:
+    # Generates explanation without SAN strings (main.py handles move display)
     if grade == MoveGrade.BEST:
         return "Perfect! You found the best move."
     
     loss = max(0, centipawn_loss)
     
+    # Check if this was a mate-related swing
+    is_mate_swing = loss >= MATE_THRESHOLD
+    
     if grade == MoveGrade.EXCELLENT:
-        return f"Excellent! {best_move_san} was marginally better."
+        if has_best_move:
+            return "Excellent! The engine's top pick was marginally better."
+        return "Excellent move!"
     
     elif grade == MoveGrade.GOOD:
-        return f"Solid choice. {best_move_san} was the engine's top pick."
+        if has_best_move:
+            return "Solid choice. The engine's top pick was slightly stronger."
+        return "Solid choice."
     
     elif grade == MoveGrade.INACCURACY:
-        return f"Slight inaccuracy (~{loss}cp). Consider {best_move_san}."
+        if has_best_move:
+            return f"Slight inaccuracy (~{loss}cp). A better move was available."
+        return f"Slight inaccuracy (~{loss}cp)."
     
     elif grade == MoveGrade.MISTAKE:
-        return f"Mistake! Lost ~{loss}cp. {best_move_san} was much stronger."
+        if has_best_move:
+            return f"Mistake! Lost ~{loss}cp. A much stronger move was available."
+        return f"Mistake! Lost ~{loss}cp."
     
     else:  # BLUNDER
-        return f"Blunder! Lost ~{loss}cp. {best_move_san} was critical here."
+        if is_mate_swing:
+            return "Blunder! This move critically affects the game outcome."
+        if has_best_move:
+            return f"Blunder! Lost ~{loss}cp. There was a critical move here."
+        return f"Blunder! Lost ~{loss}cp."
 
 
 def assess_move(
-    board: chess.Board,
     move_played: chess.Move,
     eval_initial: int,
     eval_final: int,
-    best_move: chess.Move,
+    best_move: Optional[chess.Move],
     player_is_white: bool
 ) -> MoveAssessment:
-
-    # Convert moves to human-readable notation while we have the board
-    move_san = board.san(move_played)
-    best_move_san = board.san(best_move)
+    # No board parameter needed — operates only on moves and numeric evals
+    # SAN conversion happens in main.py where the board state is available
     
-    was_best = (move_played == best_move)
+    # Handle None best_move gracefully
+    was_best = (move_played == best_move) if best_move is not None else False
+    has_best_move = best_move is not None
+    
     cp_loss = _calculate_centipawn_loss(eval_initial, eval_final, player_is_white)
     grade = _determine_grade(cp_loss, was_best)
-    explanation = _generate_explanation(grade, cp_loss, best_move_san, move_san)
+    explanation = _generate_explanation(grade, cp_loss, has_best_move)
     
     return MoveAssessment(
         move_played=move_played,
-        move_san=move_san,
         grade=grade,
         eval_initial=eval_initial,
         eval_final=eval_final,
         centipawn_loss=cp_loss,
         best_move=best_move,
-        best_move_san=best_move_san,
         was_best_move=was_best,
         explanation=explanation
     )

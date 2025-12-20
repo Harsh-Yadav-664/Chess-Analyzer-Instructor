@@ -58,17 +58,26 @@ def display_welcome() -> None:
     print("=" * 55 + "\n")
 
 
-def display_assessment(assessment) -> None:
+def display_assessment(board: chess.Board, assessment) -> None:
     """Print move assessment with color-coded grade."""
+    # SAN conversion done here with correct board state (BEFORE the move)
+    move_san = board.san(assessment.move_played)
+    
+    # Handle best_move being None
+    if assessment.best_move is not None:
+        best_move_san = board.san(assessment.best_move)
+    else:
+        best_move_san = None
+    
     color = GRADE_COLORS.get(assessment.grade, "")
     
     print(f"\n{'─' * 55}")
-    print(f"  Move played: {Colors.BOLD}{assessment.move_san}{Colors.RESET}")
+    print(f"  Move played: {Colors.BOLD}{move_san}{Colors.RESET}")
     print(f"  Evaluation:  {assessment.eval_initial/100:+.2f}  →  {assessment.eval_final/100:+.2f}")
     print(f"  Grade:       {color}{assessment.grade.name}{Colors.RESET}")
     
-    if not assessment.was_best_move:
-        print(f"  Best was:    {assessment.best_move_san}")
+    if not assessment.was_best_move and best_move_san is not None:
+        print(f"  Best was:    {best_move_san}")
     
     print(f"\n  {assessment.explanation}")
     print(f"{'─' * 55}\n")
@@ -179,9 +188,8 @@ def play_game(engine: ChessEngine) -> None:
             board_copy.push(player_move)
             analysis_final = engine.analyze(board_copy)
             
-            # 4. Generate assessment (board still in BEFORE state for SAN)
+            # 4. Generate assessment (no board needed, pure move/eval logic)
             assessment = assess_move(
-                board=board,
                 move_played=player_move,
                 eval_initial=analysis_initial.cp_score_white,
                 eval_final=analysis_final.cp_score_white,
@@ -189,8 +197,8 @@ def play_game(engine: ChessEngine) -> None:
                 player_is_white=player_is_white
             )
             
-            # 5. Display assessment (still BEFORE state for context)
-            display_assessment(assessment)
+            # 5. Display assessment (pass board for SAN conversion)
+            display_assessment(board, assessment)
             
             # 6. Now actually apply the move
             board.push(player_move)

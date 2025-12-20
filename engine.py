@@ -7,10 +7,10 @@ from typing import Optional
 # 100 centipawns = 1 pawn unit
 @dataclass(frozen=True)
 class AnalysisResult:
-    cp_score_white: int       # From White's perspective, always
-    best_move: chess.Move       # Engine's recommended move
-    is_mate: bool               # True if forced mate exists
-    mate_in: Optional[int]      # Moves to mate (+ = White mates, - = Black mates)
+    cp_score_white: int                  # From White's perspective, always
+    best_move: Optional[chess.Move]      # Engine's recommended move (None if no PV)
+    is_mate: bool                        # True if forced mate exists
+    mate_in: Optional[int]               # Moves to mate (+ = White mates, - = Black mates)
 
 
 class ChessEngine:
@@ -45,13 +45,16 @@ class ChessEngine:
         score = info["score"].white()
         
         # Best move is first move of principal variation
-        best_move = info["pv"][0]
+        # PV can be empty in terminal positions (checkmate/stalemate)
+        pv = info.get("pv", [])
+        best_move = pv[0] if pv else None
         
         # Handle mate scores specially
         if score.is_mate():
             mate_in = score.mate()  # Positive = White mates in N, negative = Black mates
-            # Use large centipawn value for mate (preserves comparison math)
-            # 100000 = "definitely winning" without overflow issues
+            # For mate scores, we use extreme centipawn values to preserve comparison math
+            # This is intentional: ensures mate threats are weighted heavily in assessments
+            # +100000 = White has winning mate, -100000 = Black has winning mate
             score_cp = 100000 if mate_in > 0 else -100000
             return AnalysisResult(
                 cp_score_white=score_cp,
