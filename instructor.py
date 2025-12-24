@@ -12,7 +12,7 @@ import chess
 
 
 class MoveGrade(IntEnum):
-# higher is better 
+    # higher is better
     BLUNDER = 1
     MISTAKE = 2
     INACCURACY = 3
@@ -32,7 +32,7 @@ class MoveAssessment:
     eval_initial: int            # Centipawns (White's perspective)
     eval_final: int              # Centipawns (White's perspective)
     centipawn_loss: int          # How much player lost (from their perspective)
-    best_move: Optional[chess.Move]  # None if engine provided no PV
+    best_move: Optional[chess.Move]
     was_best_move: bool
     explanation: str
 
@@ -44,51 +44,30 @@ def _calculate_centipawn_loss(
 ) -> int:
     """
     RETURNS: Positive = player's position got worse
-             Zero/Negative = player's position stayed same or improved
     """
     if player_is_white:
-        # White wants higher eval; loss = how much eval dropped
         return eval_initial - eval_final
     else:
-        # Black wants lower eval; loss = how much eval increased
         return eval_final - eval_initial
 
 
 def _determine_grade(centipawn_loss: int, was_best_move: bool) -> MoveGrade:
-    """
-    Convert centipawn loss to a human-meaningful grade.
-    
-    THRESHOLDS based on chess.com/lichess conventions:
-    - Best: Played the engine's top choice
-    - Excellent: Within 10cp of best (basically optimal for humans)
-    - Good: Within 25cp (solid, no real improvement needed)
-    - Inaccuracy: 25-50cp lost (small slip, worth noting)
-    - Mistake: 50-100cp lost (real error, needs attention)
-    - Blunder: 100+ cp lost (serious error, game-changing)
-    
-    # FUTURE: Make thresholds configurable per skill level.
-    # Beginners shouldn't be told a 30cp move is an "inaccuracy."
-    """
     if was_best_move:
         return MoveGrade.BEST
-    
-    # Clamp to 0 — improving the position shouldn't lower grade
+
     loss = max(0, centipawn_loss)
-    
-    # Handle mate-level swings explicitly (walked into mate or missed mate)
+
     if loss >= MATE_THRESHOLD:
         return MoveGrade.BLUNDER
-    
     if loss <= 10:
         return MoveGrade.EXCELLENT
-    elif loss <= 25:
+    if loss <= 25:
         return MoveGrade.GOOD
-    elif loss <= 50:
+    if loss <= 50:
         return MoveGrade.INACCURACY
-    elif loss <= 100:
+    if loss <= 100:
         return MoveGrade.MISTAKE
-    else:
-        return MoveGrade.BLUNDER
+    return MoveGrade.BLUNDER
 
 
 def _generate_explanation(
@@ -96,41 +75,78 @@ def _generate_explanation(
     centipawn_loss: int,
     has_best_move: bool
 ) -> str:
-    # Generates explanation without SAN strings (main.py handles move display)
     if grade == MoveGrade.BEST:
         return "Perfect! You found the best move."
-    
+
     loss = max(0, centipawn_loss)
-    
-    # Check if this was a mate-related swing
-    is_mate_swing = loss >= MATE_THRESHOLD
-    
+
     if grade == MoveGrade.EXCELLENT:
-        if has_best_move:
-            return "Excellent! The engine's top pick was marginally better."
-        return "Excellent move!"
-    
-    elif grade == MoveGrade.GOOD:
-        if has_best_move:
-            return "Solid choice. The engine's top pick was slightly stronger."
-        return "Solid choice."
-    
-    elif grade == MoveGrade.INACCURACY:
-        if has_best_move:
-            return f"Slight inaccuracy (~{loss}cp). A better move was available."
-        return f"Slight inaccuracy (~{loss}cp)."
-    
-    elif grade == MoveGrade.MISTAKE:
-        if has_best_move:
-            return f"Mistake! Lost ~{loss}cp. A much stronger move was available."
-        return f"Mistake! Lost ~{loss}cp."
-    
-    else:  # BLUNDER
-        if is_mate_swing:
-            return "Blunder! This move critically affects the game outcome."
-        if has_best_move:
-            return f"Blunder! Lost ~{loss}cp. There was a critical move here."
-        return f"Blunder! Lost ~{loss}cp."
+        return "Excellent! The engine's top pick was marginally better." if has_best_move else "Excellent move!"
+    if grade == MoveGrade.GOOD:
+        return "Solid choice. The engine's top pick was slightly stronger." if has_best_move else "Solid choice."
+    if grade == MoveGrade.INACCURACY:
+        return f"Slight inaccuracy (~{loss}cp). A better move was available." if has_best_move else f"Slight inaccuracy (~{loss}cp)."
+    if grade == MoveGrade.MISTAKE:
+        return f"Mistake! Lost ~{loss}cp. A much stronger move was available." if has_best_move else f"Mistake! Lost ~{loss}cp."
+    return f"Blunder! Lost ~{loss}cp."
+
+
+# =============================================================================
+# TACTICAL ANALYSIS
+# =============================================================================
+
+def analyze_tactics(
+    board_before: chess.Board,
+    board_after: chess.Board,
+    eval_initial: int,
+    eval_final: int,
+    best_move: Optional[chess.Move],
+    player_is_white: bool
+) -> Optional[str]:
+    """
+    Detect tactical reasons for a bad move.
+    Returns explanation string or None.
+    """
+
+    player_color = chess.WHITE if player_is_white else chess.BLACK
+    opponent_color = not player_color
+
+    cp_loss = _calculate_centipawn_loss(eval_initial, eval_final, player_is_white)
+
+    # ------------------------------------------------------------------
+    # 1. MISSED MATE (corrected: must be mate FOR the player)
+    # ------------------------------------------------------------------
+    if player_is_white:
+        had_mate = eval_initial >= MATE_THRESHOLD
+        still_has_mate = eval_final >= MATE_THRESHOLD
+    else:
+        had_mate = eval_initial <= -MATE_THRESHOLD
+        still_has_mate = eval_final <= -MATE_THRESHOLD
+
+    if had_mate and not still_has_mate:
+        return "You missed a forced checkmate."
+
+    # ------------------------------------------------------------------
+    # 2. HUNG PIECE
+    # ------------------------------------------------------------------
+    if cp_loss >= 100:
+        for square in chess.SQUARES:
+            piece = board_after.piece_at(square)
+            if piece is None or piece.color != player_color:
+                continue
+
+            if board_after.is_attacked_by(opponent_color, square):
+                if not board_after.is_attacked_by(player_color, square):
+                    if not board_before.is_attacked_by(opponent_color, square):
+                        return "You left a piece undefended and it can be captured."
+
+    # ------------------------------------------------------------------
+    # 3. UNFORCED ERROR
+    # ------------------------------------------------------------------
+    if cp_loss >= 300:
+        return "This move caused a large evaluation drop without forcing pressure."
+
+    return None
 
 
 def assess_move(
@@ -138,19 +154,30 @@ def assess_move(
     eval_initial: int,
     eval_final: int,
     best_move: Optional[chess.Move],
-    player_is_white: bool
+    player_is_white: bool,
+    board_before: Optional[chess.Board] = None,
+    board_after: Optional[chess.Board] = None
 ) -> MoveAssessment:
-    # No board parameter needed — operates only on moves and numeric evals
-    # SAN conversion happens in main.py where the board state is available
-    
-    # Handle None best_move gracefully
-    was_best = (move_played == best_move) if best_move is not None else False
+
+    was_best = (move_played == best_move) if best_move else False
     has_best_move = best_move is not None
-    
+
     cp_loss = _calculate_centipawn_loss(eval_initial, eval_final, player_is_white)
     grade = _determine_grade(cp_loss, was_best)
     explanation = _generate_explanation(grade, cp_loss, has_best_move)
-    
+
+    if board_before and board_after:
+        tactical_reason = analyze_tactics(
+            board_before,
+            board_after,
+            eval_initial,
+            eval_final,
+            best_move,
+            player_is_white
+        )
+        if tactical_reason:
+            explanation = tactical_reason
+
     return MoveAssessment(
         move_played=move_played,
         grade=grade,

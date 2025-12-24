@@ -596,8 +596,11 @@ class MainWindow(QMainWindow):
             eval_initial=analysis_before.cp_score_white,
             eval_final=analysis_after.cp_score_white,
             best_move=analysis_before.best_move,
-            player_is_white=self.player_is_white
+            player_is_white=self.player_is_white,
+            board_before=board_before,
+            board_after=board_after
         )
+
         
         # ===== (e) DISPLAY ASSESSMENT =====
         # SAN conversion happens here with correct board state
