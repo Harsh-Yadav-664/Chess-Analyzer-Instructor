@@ -3,6 +3,7 @@ Minimal GUI shell for AI Chess Instructor.
 """
 
 import sys
+import math
 import chess
 from typing import Optional, List
 
@@ -11,8 +12,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QTextEdit, QMessageBox, QDialog, QDialogButtonBox,
     QComboBox, QGroupBox
 )
-from PyQt6.QtCore import Qt, QRect
-from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
+from PyQt6.QtCore import Qt, QRect, QPointF
+from PyQt6.QtGui import QPainter, QColor, QFont, QBrush, QPolygonF
 
 from engine import ChessEngine
 from instructor import (
@@ -228,6 +229,7 @@ class ChessBoardWidget(QWidget):
         self.selected_square = None
         self.legal_destinations: List[int] = []
         self.last_move = None
+        self.visual_cues = None
         self.on_move_callback = None
         self.interaction_enabled = True
 
@@ -242,6 +244,10 @@ class ChessBoardWidget(QWidget):
 
     def set_last_move(self, move):
         self.last_move = move
+        self.update()
+
+    def set_visual_cues(self, cues):
+        self.visual_cues = cues
         self.update()
 
     def set_interaction_enabled(self, enabled):
@@ -260,6 +266,15 @@ class ChessBoardWidget(QWidget):
         for sq in chess.SQUARES:
             self._draw_square(painter, sq)
 
+        # Draw highlights BEFORE pieces
+        if self.visual_cues:
+            highlights = self.visual_cues.get("highlights", [])
+            for h in highlights:
+                try:
+                    self._draw_highlight(painter, h["square"], h["type"])
+                except:
+                    pass
+
         for sq in self.legal_destinations:
             self._draw_dot(painter, sq)
 
@@ -267,6 +282,15 @@ class ChessBoardWidget(QWidget):
             piece = self.board.piece_at(sq)
             if piece:
                 self._draw_piece(painter, sq, piece)
+
+        # Draw arrows AFTER pieces
+        if self.visual_cues:
+            arrows = self.visual_cues.get("arrows", [])
+            for a in arrows:
+                try:
+                    self._draw_arrow(painter, a["from"], a["to"], a["type"])
+                except:
+                    pass
 
         painter.end()
 
@@ -283,6 +307,66 @@ class ChessBoardWidget(QWidget):
             color = LIGHT_SQUARE if (chess.square_file(sq) + chess.square_rank(sq)) % 2 else DARK_SQUARE
 
         painter.fillRect(rect, color)
+
+    def _draw_highlight(self, painter, square, highlight_type):
+        x = chess.square_file(square) * self.square_size
+        y = (7 - chess.square_rank(square)) * self.square_size
+        rect = QRect(x, y, self.square_size, self.square_size)
+        
+        if highlight_type == "danger":
+            color = QColor(255, 0, 0, 100)
+        else:
+            color = QColor(255, 165, 0, 100)
+        
+        painter.fillRect(rect, color)
+
+    def _draw_arrow(self, painter, from_sq, to_sq, arrow_type):
+        from_x = chess.square_file(from_sq) * self.square_size + self.square_size // 2
+        from_y = (7 - chess.square_rank(from_sq)) * self.square_size + self.square_size // 2
+        to_x = chess.square_file(to_sq) * self.square_size + self.square_size // 2
+        to_y = (7 - chess.square_rank(to_sq)) * self.square_size + self.square_size // 2
+        
+        if arrow_type == "best":
+            color = QColor(0, 200, 0, 180)
+        else:
+            color = QColor(255, 0, 0, 180)
+        
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        
+        dx = to_x - from_x
+        dy = to_y - from_y
+        length = math.sqrt(dx * dx + dy * dy)
+        
+        if length < 5:
+            return
+        
+        angle = math.atan2(dy, dx)
+        
+        shaft_width = 8
+        head_width = 20
+        head_length = 15
+        
+        shaft_end = length - head_length
+        
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+        
+        perp_x = -sin_a * shaft_width / 2
+        perp_y = cos_a * shaft_width / 2
+        
+        points = QPolygonF()
+        points.append(QPointF(from_x + perp_x, from_y + perp_y))
+        points.append(QPointF(from_x - perp_x, from_y - perp_y))
+        points.append(QPointF(from_x + cos_a * shaft_end - perp_x, from_y + sin_a * shaft_end - perp_y))
+        points.append(QPointF(from_x + cos_a * shaft_end + perp_y * head_width / shaft_width, 
+                            from_y + sin_a * shaft_end - perp_x * head_width / shaft_width))
+        points.append(QPointF(to_x, to_y))
+        points.append(QPointF(from_x + cos_a * shaft_end - perp_y * head_width / shaft_width, 
+                            from_y + sin_a * shaft_end + perp_x * head_width / shaft_width))
+        points.append(QPointF(from_x + cos_a * shaft_end + perp_x, from_y + sin_a * shaft_end + perp_y))
+        
+        painter.drawPolygon(points)
 
     def _draw_dot(self, painter, sq):
         cx = chess.square_file(sq) * self.square_size + self.square_size // 2
@@ -590,6 +674,12 @@ class MainWindow(QMainWindow):
 
         self.output.setHtml(html)
 
+        # Set visual cues from assessment
+        if assessment.visual_cues:
+            self.board_widget.set_visual_cues(assessment.visual_cues)
+        else:
+            self.board_widget.set_visual_cues(None)
+
         self.board.push(move)
         self.board_widget.set_board(self.board)
         self.board_widget.set_last_move(move)
@@ -626,6 +716,7 @@ class MainWindow(QMainWindow):
         self.board = chess.Board(self.undo_fen)
         self.board_widget.set_board(self.board)
         self.board_widget.set_last_move(None)
+        self.board_widget.set_visual_cues(None)
         self.board_widget.set_interaction_enabled(True)
         self.undo_fen = None
         self.undo_btn.setEnabled(False)
@@ -640,6 +731,7 @@ class MainWindow(QMainWindow):
         self.board = chess.Board()
         self.board_widget.set_board(self.board)
         self.board_widget.set_last_move(None)
+        self.board_widget.set_visual_cues(None)
         self.board_widget.set_interaction_enabled(True)
         self.undo_fen = None
         self.undo_btn.setEnabled(False)
