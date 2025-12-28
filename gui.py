@@ -8,7 +8,8 @@ from typing import Optional, List
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QPushButton, QLabel, QTextEdit, QMessageBox
+    QPushButton, QLabel, QTextEdit, QMessageBox, QDialog, QDialogButtonBox,
+    QComboBox, QGroupBox
 )
 from PyQt6.QtCore import Qt, QRect
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
@@ -18,8 +19,17 @@ from instructor import (
     assess_move,
     analyze_pre_move_threats,
     reset_adaptive_state,
-    update_adaptive_state,
+    get_current_mode,
     MoveGrade
+)
+from stats import (
+    start_game,
+    record_move,
+    end_game,
+    get_profile_summary,
+    get_training_suggestion,
+    reset_profile,
+    get_session
 )
 
 
@@ -55,6 +65,156 @@ GRADE_COLORS = {
     MoveGrade.MISTAKE: "#ef4444",
     MoveGrade.BLUNDER: "#a855f7",
 }
+
+
+# =========================
+# PROFILE DIALOG
+# =========================
+
+class ProfileDialog(QDialog):
+    """Dialog to show player profile and training suggestions."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Player Profile")
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(300)
+        
+        layout = QVBoxLayout(self)
+        
+        # Profile summary
+        profile_group = QGroupBox("Profile Summary")
+        profile_layout = QVBoxLayout(profile_group)
+        self.profile_label = QLabel()
+        self.profile_label.setWordWrap(True)
+        self.profile_label.setFont(QFont("Arial", 11))
+        profile_layout.addWidget(self.profile_label)
+        layout.addWidget(profile_group)
+        
+        # Training suggestion
+        training_group = QGroupBox("Training Suggestion")
+        training_layout = QVBoxLayout(training_group)
+        self.training_label = QLabel()
+        self.training_label.setWordWrap(True)
+        self.training_label.setFont(QFont("Arial", 11))
+        training_layout.addWidget(self.training_label)
+        layout.addWidget(training_group)
+        
+        # Session stats
+        stats_group = QGroupBox("Current Session")
+        stats_layout = QVBoxLayout(stats_group)
+        self.stats_label = QLabel()
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setFont(QFont("Arial", 10))
+        stats_layout.addWidget(self.stats_label)
+        layout.addWidget(stats_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        reset_btn = QPushButton("Reset Profile")
+        reset_btn.clicked.connect(self._reset_profile)
+        button_layout.addWidget(reset_btn)
+        
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        button_layout.addWidget(close_btn)
+        
+        layout.addLayout(button_layout)
+        
+        self._refresh()
+    
+    def _refresh(self):
+        profile_text = get_profile_summary()
+        self.profile_label.setText(profile_text if profile_text else "No data yet.")
+        
+        suggestion = get_training_suggestion()
+        self.training_label.setText(suggestion if suggestion else "Play more games to get suggestions.")
+        
+        session = get_session()
+        if session.current_game:
+            stats = session.current_game
+            self.stats_label.setText(
+                f"Current game: {stats.move_count} moves\n"
+                f"Blunders: {stats.get_blunder_count()} | "
+                f"Mistakes: {stats.get_mistake_count()} | "
+                f"Inaccuracies: {stats.get_inaccuracy_count()}"
+            )
+        else:
+            self.stats_label.setText("No game in progress.")
+    
+    def _reset_profile(self):
+        reply = QMessageBox.question(
+            self,
+            "Reset Profile",
+            "Are you sure you want to reset all historical data?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            reset_profile()
+            self._refresh()
+
+
+# =========================
+# GAME SUMMARY DIALOG
+# =========================
+
+class GameSummaryDialog(QDialog):
+    """Dialog shown at end of game with summary and feedback."""
+    
+    def __init__(self, feedback: dict, result: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Game Summary")
+        self.setMinimumWidth(350)
+        
+        layout = QVBoxLayout(self)
+        
+        # Result
+        result_label = QLabel(f"Result: {result}")
+        result_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(result_label)
+        
+        layout.addSpacing(10)
+        
+        # Stats
+        stats_text = (
+            f"Total moves: {feedback.get('total_moves', 0)}\n"
+            f"Blunders: {feedback.get('blunders', 0)}\n"
+            f"Mistakes: {feedback.get('mistakes', 0)}\n"
+            f"Inaccuracies: {feedback.get('inaccuracies', 0)}\n"
+            f"Good moves: {feedback.get('good_moves', 0)}"
+        )
+        stats_label = QLabel(stats_text)
+        stats_label.setFont(QFont("Consolas", 11))
+        layout.addWidget(stats_label)
+        
+        layout.addSpacing(10)
+        
+        # Summary
+        summary_group = QGroupBox("Analysis")
+        summary_layout = QVBoxLayout(summary_group)
+        summary_label = QLabel(feedback.get('summary', ''))
+        summary_label.setWordWrap(True)
+        summary_label.setFont(QFont("Arial", 11))
+        summary_layout.addWidget(summary_label)
+        layout.addWidget(summary_group)
+        
+        # Training suggestion
+        suggestion = get_training_suggestion()
+        if suggestion:
+            suggestion_group = QGroupBox("Suggestion")
+            suggestion_layout = QVBoxLayout(suggestion_group)
+            suggestion_label = QLabel(suggestion)
+            suggestion_label.setWordWrap(True)
+            suggestion_label.setFont(QFont("Arial", 11))
+            suggestion_layout.addWidget(suggestion_label)
+            layout.addWidget(suggestion_group)
+        
+        # Close button
+        close_btn = QPushButton("OK")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
 
 
 # =========================
@@ -155,7 +315,6 @@ class ChessBoardWidget(QWidget):
             from_sq = self.selected_square
             to_sq = sq
             
-            # Handle promotion
             piece = self.board.piece_at(from_sq)
             if piece and piece.piece_type == chess.PAWN:
                 to_rank = chess.square_rank(to_sq)
@@ -196,18 +355,18 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("AI Chess Instructor")
 
-        self.instructor_mode = "learning"
+        self.instructor_mode = "adaptive"
         self.board = chess.Board()
         self.engine: Optional[ChessEngine] = None
         self.player_is_white = True
         self.undo_fen = None
+        self.game_active = False
 
         self._build_ui()
         self._init_engine()
         
         self.board_widget.set_board(self.board)
-        self._update_status("White to move")
-        self._show_message("Game ready. Click a piece to start.")
+        self._start_new_game()
 
     def _build_ui(self):
         root = QWidget()
@@ -222,24 +381,59 @@ class MainWindow(QMainWindow):
         side = QVBoxLayout()
         layout.addLayout(side)
 
+        # Status
         self.status = QLabel("Starting...")
         self.status.setFont(QFont("Arial", 14, QFont.Weight.Bold))
         self.status.setWordWrap(True)
         side.addWidget(self.status)
 
+        # Mode selector
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("Mode:")
+        mode_label.setFont(QFont("Arial", 10))
+        mode_layout.addWidget(mode_label)
+        
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["adaptive", "learning", "easy", "medium", "hard"])
+        self.mode_combo.setCurrentText(self.instructor_mode)
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        mode_layout.addWidget(self.mode_combo)
+        mode_layout.addStretch()
+        side.addLayout(mode_layout)
+
+        # Output
         self.output = QTextEdit()
         self.output.setReadOnly(True)
         self.output.setFont(QFont("Consolas", 10))
         side.addWidget(self.output)
 
+        # Game stats bar
+        self.stats_bar = QLabel("")
+        self.stats_bar.setFont(QFont("Arial", 9))
+        self.stats_bar.setStyleSheet("color: #666;")
+        side.addWidget(self.stats_bar)
+
+        # Buttons
+        btn_layout1 = QHBoxLayout()
+        
         self.undo_btn = QPushButton("Undo Move")
         self.undo_btn.setEnabled(False)
         self.undo_btn.clicked.connect(self._undo)
-        side.addWidget(self.undo_btn)
+        btn_layout1.addWidget(self.undo_btn)
 
         new_game_btn = QPushButton("New Game")
         new_game_btn.clicked.connect(self._new_game)
-        side.addWidget(new_game_btn)
+        btn_layout1.addWidget(new_game_btn)
+        
+        side.addLayout(btn_layout1)
+
+        btn_layout2 = QHBoxLayout()
+        
+        profile_btn = QPushButton("Player Profile")
+        profile_btn.clicked.connect(self._show_profile)
+        btn_layout2.addWidget(profile_btn)
+        
+        side.addLayout(btn_layout2)
 
     def _init_engine(self):
         try:
@@ -256,17 +450,60 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Engine Error", f"Failed to start engine:\n{e}")
             self.engine = None
 
+    def _on_mode_changed(self, mode: str):
+        self.instructor_mode = mode
+        self._update_status_display()
+
+    def _update_status_display(self):
+        mode_display = self._get_mode_display()
+        if self.board.is_check():
+            self._update_status(f"White to move - CHECK | Mode: {mode_display}")
+        else:
+            self._update_status(f"White to move | Mode: {mode_display}")
+
     def _update_status(self, text):
         self.status.setText(text)
 
+    def _get_mode_display(self):
+        if self.instructor_mode == "adaptive":
+            return f"adaptive ({get_current_mode()})"
+        return self.instructor_mode
+
     def _show_message(self, text):
         self.output.setPlainText(text)
+
+    def _update_stats_bar(self):
+        session = get_session()
+        if session.current_game:
+            stats = session.current_game
+            self.stats_bar.setText(
+                f"Moves: {stats.move_count} | "
+                f"Blunders: {stats.get_blunder_count()} | "
+                f"Mistakes: {stats.get_mistake_count()} | "
+                f"Good: {stats.get_good_move_count()}"
+            )
+        else:
+            self.stats_bar.setText("")
+
+    def _show_profile(self):
+        dialog = ProfileDialog(self)
+        dialog.exec()
+
+    def _start_new_game(self):
+        start_game()
+        self.game_active = True
+        self._update_status(f"White to move | Mode: {self._get_mode_display()}")
+        self._show_message("Game ready. Click a piece to start.")
+        self._update_stats_bar()
 
     def _check_game_over(self):
         if not self.board.is_game_over():
             return False
         
         self.board_widget.set_interaction_enabled(False)
+        self.game_active = False
+        
+        result = self.board.result()
         
         if self.board.is_checkmate():
             winner = "Black" if self.board.turn == chess.WHITE else "White"
@@ -276,7 +513,18 @@ class MainWindow(QMainWindow):
         elif self.board.is_insufficient_material():
             self._update_status("Draw - insufficient material")
         else:
-            self._update_status(f"Game over: {self.board.result()}")
+            self._update_status(f"Game over: {result}")
+        
+        # End game and get feedback
+        feedback = end_game(result)
+        
+        # Show game summary dialog
+        dialog = GameSummaryDialog(feedback, result, self)
+        dialog.exec()
+        
+        # Also update output panel
+        summary = feedback.get('summary', '')
+        self.output.append(f"\n\n<b>Game Summary:</b><br>{summary}")
         
         return True
 
@@ -288,7 +536,6 @@ class MainWindow(QMainWindow):
         if self.board.is_game_over():
             return
 
-        # Pre-move warning
         warning = analyze_pre_move_threats(
             self.board,
             chess.WHITE if self.player_is_white else chess.BLACK,
@@ -297,16 +544,13 @@ class MainWindow(QMainWindow):
 
         self.undo_fen = self.board.fen()
 
-        # Analyze before
         analysis_before = self.engine.analyze(self.board)
         board_before = self.board.copy()
 
-        # Analyze after
         board_after = self.board.copy()
         board_after.push(move)
         analysis_after = self.engine.analyze(board_after)
 
-        # Get assessment
         assessment = assess_move(
             move_played=move,
             eval_initial=analysis_before.cp_score_white,
@@ -318,10 +562,10 @@ class MainWindow(QMainWindow):
             engine=self.engine
         )
 
-        # Update adaptive state
-        update_adaptive_state(assessment.grade)
+        # Record move for stats
+        record_move(assessment.grade, assessment.explanation)
+        self._update_stats_bar()
 
-        # Get SAN before pushing
         move_san = self.board.san(move)
         best_san = None
         if assessment.best_move and assessment.best_move != move:
@@ -330,7 +574,6 @@ class MainWindow(QMainWindow):
             except:
                 pass
 
-        # Build display
         grade_color = GRADE_COLORS.get(assessment.grade, "#000000")
         
         html = f"<b>Your move:</b> {move_san}<br>"
@@ -347,7 +590,6 @@ class MainWindow(QMainWindow):
 
         self.output.setHtml(html)
 
-        # Apply move
         self.board.push(move)
         self.board_widget.set_board(self.board)
         self.board_widget.set_last_move(move)
@@ -356,7 +598,6 @@ class MainWindow(QMainWindow):
             self.undo_btn.setEnabled(True)
             return
 
-        # Engine's turn
         self._update_status("Engine thinking...")
         self.board_widget.set_interaction_enabled(False)
         QApplication.processEvents()
@@ -376,10 +617,7 @@ class MainWindow(QMainWindow):
         self.undo_btn.setEnabled(True)
 
         if not self._check_game_over():
-            if self.board.is_check():
-                self._update_status("White to move - CHECK")
-            else:
-                self._update_status("White to move")
+            self._update_status_display()
 
     def _undo(self):
         if not self.undo_fen:
@@ -392,9 +630,13 @@ class MainWindow(QMainWindow):
         self.undo_fen = None
         self.undo_btn.setEnabled(False)
         self._show_message("Move undone.")
-        self._update_status("White to move")
+        self._update_status_display()
 
     def _new_game(self):
+        # If game is active, end it first
+        if self.game_active:
+            end_game(None)
+        
         self.board = chess.Board()
         self.board_widget.set_board(self.board)
         self.board_widget.set_last_move(None)
@@ -402,10 +644,14 @@ class MainWindow(QMainWindow):
         self.undo_fen = None
         self.undo_btn.setEnabled(False)
         reset_adaptive_state()
-        self._update_status("White to move")
-        self._show_message("New game started.")
+        
+        self._start_new_game()
 
     def closeEvent(self, event):
+        # End current game if active
+        if self.game_active:
+            end_game(None)
+        
         if self.engine:
             try:
                 self.engine.stop()
