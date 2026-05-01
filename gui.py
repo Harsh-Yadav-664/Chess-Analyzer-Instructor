@@ -9,13 +9,13 @@ from typing import Optional, List
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QPushButton, QLabel, QTextEdit, QMessageBox, QDialog, QDialogButtonBox,
+    QPushButton, QLabel, QTextEdit, QMessageBox, QDialog,
     QComboBox, QGroupBox
 )
 from PyQt6.QtCore import Qt, QRect, QPointF
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush, QPolygonF
 
-from engine import ChessEngine
+from engine import ChessEngine, DIFFICULTY_PRESETS
 from instructor import (
     assess_move,
     analyze_pre_move_threats,
@@ -73,17 +73,14 @@ GRADE_COLORS = {
 # =========================
 
 class ProfileDialog(QDialog):
-    """Dialog to show player profile and training suggestions."""
-    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Player Profile")
         self.setMinimumWidth(400)
         self.setMinimumHeight(300)
-        
+
         layout = QVBoxLayout(self)
-        
-        # Profile summary
+
         profile_group = QGroupBox("Profile Summary")
         profile_layout = QVBoxLayout(profile_group)
         self.profile_label = QLabel()
@@ -91,8 +88,7 @@ class ProfileDialog(QDialog):
         self.profile_label.setFont(QFont("Arial", 11))
         profile_layout.addWidget(self.profile_label)
         layout.addWidget(profile_group)
-        
-        # Training suggestion
+
         training_group = QGroupBox("Training Suggestion")
         training_layout = QVBoxLayout(training_group)
         self.training_label = QLabel()
@@ -100,8 +96,7 @@ class ProfileDialog(QDialog):
         self.training_label.setFont(QFont("Arial", 11))
         training_layout.addWidget(self.training_label)
         layout.addWidget(training_group)
-        
-        # Session stats
+
         stats_group = QGroupBox("Current Session")
         stats_layout = QVBoxLayout(stats_group)
         self.stats_label = QLabel()
@@ -109,29 +104,25 @@ class ProfileDialog(QDialog):
         self.stats_label.setFont(QFont("Arial", 10))
         stats_layout.addWidget(self.stats_label)
         layout.addWidget(stats_group)
-        
-        # Buttons
+
         button_layout = QHBoxLayout()
-        
         reset_btn = QPushButton("Reset Profile")
         reset_btn.clicked.connect(self._reset_profile)
         button_layout.addWidget(reset_btn)
-        
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         button_layout.addWidget(close_btn)
-        
         layout.addLayout(button_layout)
-        
+
         self._refresh()
-    
+
     def _refresh(self):
         profile_text = get_profile_summary()
         self.profile_label.setText(profile_text if profile_text else "No data yet.")
-        
+
         suggestion = get_training_suggestion()
         self.training_label.setText(suggestion if suggestion else "Play more games to get suggestions.")
-        
+
         session = get_session()
         if session.current_game:
             stats = session.current_game
@@ -143,11 +134,10 @@ class ProfileDialog(QDialog):
             )
         else:
             self.stats_label.setText("No game in progress.")
-    
+
     def _reset_profile(self):
         reply = QMessageBox.question(
-            self,
-            "Reset Profile",
+            self, "Reset Profile",
             "Are you sure you want to reset all historical data?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
@@ -161,24 +151,20 @@ class ProfileDialog(QDialog):
 # =========================
 
 class GameSummaryDialog(QDialog):
-    """Dialog shown at end of game with summary and feedback."""
-    
     def __init__(self, feedback: dict, result: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Game Summary")
         self.setMinimumWidth(350)
-        
+
         layout = QVBoxLayout(self)
-        
-        # Result
+
         result_label = QLabel(f"Result: {result}")
         result_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
         result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(result_label)
-        
+
         layout.addSpacing(10)
-        
-        # Stats
+
         stats_text = (
             f"Total moves: {feedback.get('total_moves', 0)}\n"
             f"Blunders: {feedback.get('blunders', 0)}\n"
@@ -189,10 +175,9 @@ class GameSummaryDialog(QDialog):
         stats_label = QLabel(stats_text)
         stats_label.setFont(QFont("Consolas", 11))
         layout.addWidget(stats_label)
-        
+
         layout.addSpacing(10)
-        
-        # Summary
+
         summary_group = QGroupBox("Analysis")
         summary_layout = QVBoxLayout(summary_group)
         summary_label = QLabel(feedback.get('summary', ''))
@@ -200,8 +185,7 @@ class GameSummaryDialog(QDialog):
         summary_label.setFont(QFont("Arial", 11))
         summary_layout.addWidget(summary_label)
         layout.addWidget(summary_group)
-        
-        # Training suggestion
+
         suggestion = get_training_suggestion()
         if suggestion:
             suggestion_group = QGroupBox("Suggestion")
@@ -211,8 +195,7 @@ class GameSummaryDialog(QDialog):
             suggestion_label.setFont(QFont("Arial", 11))
             suggestion_layout.addWidget(suggestion_label)
             layout.addWidget(suggestion_group)
-        
-        # Close button
+
         close_btn = QPushButton("OK")
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
@@ -266,10 +249,8 @@ class ChessBoardWidget(QWidget):
         for sq in chess.SQUARES:
             self._draw_square(painter, sq)
 
-        # Draw highlights BEFORE pieces
         if self.visual_cues:
-            highlights = self.visual_cues.get("highlights", [])
-            for h in highlights:
+            for h in self.visual_cues.get("highlights", []):
                 try:
                     self._draw_highlight(painter, h["square"], h["type"])
                 except:
@@ -283,10 +264,8 @@ class ChessBoardWidget(QWidget):
             if piece:
                 self._draw_piece(painter, sq, piece)
 
-        # Draw arrows AFTER pieces
         if self.visual_cues:
-            arrows = self.visual_cues.get("arrows", [])
-            for a in arrows:
+            for a in self.visual_cues.get("arrows", []):
                 try:
                     self._draw_arrow(painter, a["from"], a["to"], a["type"])
                 except:
@@ -312,12 +291,7 @@ class ChessBoardWidget(QWidget):
         x = chess.square_file(square) * self.square_size
         y = (7 - chess.square_rank(square)) * self.square_size
         rect = QRect(x, y, self.square_size, self.square_size)
-        
-        if highlight_type == "danger":
-            color = QColor(255, 0, 0, 100)
-        else:
-            color = QColor(255, 165, 0, 100)
-        
+        color = QColor(255, 0, 0, 100) if highlight_type == "danger" else QColor(255, 165, 0, 100)
         painter.fillRect(rect, color)
 
     def _draw_arrow(self, painter, from_sq, to_sq, arrow_type):
@@ -325,47 +299,45 @@ class ChessBoardWidget(QWidget):
         from_y = (7 - chess.square_rank(from_sq)) * self.square_size + self.square_size // 2
         to_x = chess.square_file(to_sq) * self.square_size + self.square_size // 2
         to_y = (7 - chess.square_rank(to_sq)) * self.square_size + self.square_size // 2
-        
-        if arrow_type == "best":
-            color = QColor(0, 200, 0, 180)
-        else:
-            color = QColor(255, 0, 0, 180)
-        
+
+        color = QColor(0, 200, 0, 180) if arrow_type == "best" else QColor(220, 50, 50, 180)
+
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(color))
-        
+
         dx = to_x - from_x
         dy = to_y - from_y
         length = math.sqrt(dx * dx + dy * dy)
-        
+
         if length < 5:
             return
-        
+
         angle = math.atan2(dy, dx)
-        
         shaft_width = 8
         head_width = 20
         head_length = 15
-        
         shaft_end = length - head_length
-        
+
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
-        
         perp_x = -sin_a * shaft_width / 2
         perp_y = cos_a * shaft_width / 2
-        
+
         points = QPolygonF()
         points.append(QPointF(from_x + perp_x, from_y + perp_y))
         points.append(QPointF(from_x - perp_x, from_y - perp_y))
         points.append(QPointF(from_x + cos_a * shaft_end - perp_x, from_y + sin_a * shaft_end - perp_y))
-        points.append(QPointF(from_x + cos_a * shaft_end + perp_y * head_width / shaft_width, 
-                            from_y + sin_a * shaft_end - perp_x * head_width / shaft_width))
+        points.append(QPointF(
+            from_x + cos_a * shaft_end + perp_y * head_width / shaft_width,
+            from_y + sin_a * shaft_end - perp_x * head_width / shaft_width
+        ))
         points.append(QPointF(to_x, to_y))
-        points.append(QPointF(from_x + cos_a * shaft_end - perp_y * head_width / shaft_width, 
-                            from_y + sin_a * shaft_end + perp_x * head_width / shaft_width))
+        points.append(QPointF(
+            from_x + cos_a * shaft_end - perp_y * head_width / shaft_width,
+            from_y + sin_a * shaft_end + perp_x * head_width / shaft_width
+        ))
         points.append(QPointF(from_x + cos_a * shaft_end + perp_x, from_y + sin_a * shaft_end + perp_y))
-        
+
         painter.drawPolygon(points)
 
     def _draw_dot(self, painter, sq):
@@ -379,7 +351,6 @@ class ChessBoardWidget(QWidget):
         x = chess.square_file(sq) * self.square_size
         y = (7 - chess.square_rank(sq)) * self.square_size
         rect = QRect(x, y, self.square_size, self.square_size)
-
         painter.setFont(QFont("Segoe UI Symbol", 40))
         painter.setPen(QColor(255, 255, 255) if piece.color else QColor(0, 0, 0))
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, PIECE_UNICODE[piece.symbol()])
@@ -398,7 +369,7 @@ class ChessBoardWidget(QWidget):
         if sq in self.legal_destinations:
             from_sq = self.selected_square
             to_sq = sq
-            
+
             piece = self.board.piece_at(from_sq)
             if piece and piece.piece_type == chess.PAWN:
                 to_rank = chess.square_rank(to_sq)
@@ -409,7 +380,7 @@ class ChessBoardWidget(QWidget):
                     move = chess.Move(from_sq, to_sq)
             else:
                 move = chess.Move(from_sq, to_sq)
-            
+
             self.selected_square = None
             self.legal_destinations = []
             self.update()
@@ -440,15 +411,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AI Chess Instructor")
 
         self.instructor_mode = "adaptive"
+        self.difficulty_mode = "intermediate"
         self.board = chess.Board()
         self.engine: Optional[ChessEngine] = None
         self.player_is_white = True
-        self.undo_fen = None
+        self.undo_stack: List[str] = []
         self.game_active = False
 
         self._build_ui()
         self._init_engine()
-        
+
         self.board_widget.set_board(self.board)
         self._start_new_game()
 
@@ -465,68 +437,72 @@ class MainWindow(QMainWindow):
         side = QVBoxLayout()
         layout.addLayout(side)
 
-        # Status
         self.status = QLabel("Starting...")
         self.status.setFont(QFont("Arial", 14, QFont.Weight.Bold))
         self.status.setWordWrap(True)
         side.addWidget(self.status)
 
-        # Mode selector
-        mode_layout = QHBoxLayout()
-        mode_label = QLabel("Mode:")
-        mode_label.setFont(QFont("Arial", 10))
-        mode_layout.addWidget(mode_label)
-        
+        # Instructor mode selector (controls explanation verbosity)
+        instructor_layout = QHBoxLayout()
+        instructor_label = QLabel("Coach:")
+        instructor_label.setFont(QFont("Arial", 10))
+        instructor_layout.addWidget(instructor_label)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["adaptive", "learning", "easy", "medium", "hard"])
         self.mode_combo.setCurrentText(self.instructor_mode)
-        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
-        mode_layout.addWidget(self.mode_combo)
-        mode_layout.addStretch()
-        side.addLayout(mode_layout)
+        self.mode_combo.currentTextChanged.connect(self._on_instructor_mode_changed)
+        instructor_layout.addWidget(self.mode_combo)
+        instructor_layout.addStretch()
+        side.addLayout(instructor_layout)
 
-        # Output
+        # Difficulty mode selector (controls engine strength)
+        difficulty_layout = QHBoxLayout()
+        difficulty_label = QLabel("Difficulty:")
+        difficulty_label.setFont(QFont("Arial", 10))
+        difficulty_layout.addWidget(difficulty_label)
+        self.difficulty_combo = QComboBox()
+        self.difficulty_combo.addItems(["beginner", "intermediate", "advanced", "engine", "adaptive"])
+        self.difficulty_combo.setCurrentText(self.difficulty_mode)
+        self.difficulty_combo.currentTextChanged.connect(self._on_difficulty_changed)
+        difficulty_layout.addWidget(self.difficulty_combo)
+        difficulty_layout.addStretch()
+        side.addLayout(difficulty_layout)
+
         self.output = QTextEdit()
         self.output.setReadOnly(True)
         self.output.setFont(QFont("Consolas", 10))
         side.addWidget(self.output)
 
-        # Game stats bar
         self.stats_bar = QLabel("")
         self.stats_bar.setFont(QFont("Arial", 9))
         self.stats_bar.setStyleSheet("color: #666;")
         side.addWidget(self.stats_bar)
 
-        # Buttons
         btn_layout1 = QHBoxLayout()
-        
         self.undo_btn = QPushButton("Undo Move")
         self.undo_btn.setEnabled(False)
         self.undo_btn.clicked.connect(self._undo)
         btn_layout1.addWidget(self.undo_btn)
-
         new_game_btn = QPushButton("New Game")
         new_game_btn.clicked.connect(self._new_game)
         btn_layout1.addWidget(new_game_btn)
-        
         side.addLayout(btn_layout1)
 
         btn_layout2 = QHBoxLayout()
-        
         profile_btn = QPushButton("Player Profile")
         profile_btn.clicked.connect(self._show_profile)
         btn_layout2.addWidget(profile_btn)
-        
         side.addLayout(btn_layout2)
 
     def _init_engine(self):
         try:
             self.engine = ChessEngine(STOCKFISH_PATH, depth=ENGINE_DEPTH)
             self.engine.start()
+            # Apply initial difficulty
+            self.engine.set_difficulty(self.difficulty_mode)
         except FileNotFoundError:
             QMessageBox.critical(
-                self,
-                "Engine Not Found",
+                self, "Engine Not Found",
                 f"Stockfish not found at:\n{STOCKFISH_PATH}\n\nPlease update STOCKFISH_PATH in gui.py"
             )
             self.engine = None
@@ -534,24 +510,52 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Engine Error", f"Failed to start engine:\n{e}")
             self.engine = None
 
-    def _on_mode_changed(self, mode: str):
+    def _on_instructor_mode_changed(self, mode: str):
+        """Controls explanation verbosity (instructor.py behavior)."""
         self.instructor_mode = mode
         self._update_status_display()
 
-    def _update_status_display(self):
-        mode_display = self._get_mode_display()
-        if self.board.is_check():
-            self._update_status(f"White to move - CHECK | Mode: {mode_display}")
-        else:
-            self._update_status(f"White to move | Mode: {mode_display}")
+    def _on_difficulty_changed(self, mode: str):
+        """Controls engine strength (engine.py behavior)."""
+        self.difficulty_mode = mode
+        if self.engine:
+            if mode == "adaptive":
+                # Apply current adaptive difficulty immediately
+                self._apply_adaptive_difficulty()
+            else:
+                self.engine.set_difficulty(mode)
+        self._update_status_display()
 
-    def _update_status(self, text):
-        self.status.setText(text)
+    def _apply_adaptive_difficulty(self):
+        """Compute blunder rate from stats and update engine difficulty."""
+        if self.engine is None:
+            return
+
+        session = get_session()
+        if session.current_game and session.current_game.move_count > 0:
+            stats = session.current_game
+            error_moves = stats.get_blunder_count() + stats.get_mistake_count()
+            blunder_rate = error_moves / stats.move_count
+        else:
+            blunder_rate = 0.2  # Default to intermediate
+
+        self.engine.set_adaptive_params(blunder_rate)
 
     def _get_mode_display(self):
         if self.instructor_mode == "adaptive":
             return f"adaptive ({get_current_mode()})"
         return self.instructor_mode
+
+    def _update_status_display(self):
+        mode_str = self._get_mode_display()
+        diff_str = self.difficulty_mode
+        if self.board.is_check():
+            self._update_status(f"White to move - CHECK | Coach: {mode_str} | Difficulty: {diff_str}")
+        else:
+            self._update_status(f"White to move | Coach: {mode_str} | Difficulty: {diff_str}")
+
+    def _update_status(self, text):
+        self.status.setText(text)
 
     def _show_message(self, text):
         self.output.setPlainText(text)
@@ -576,19 +580,19 @@ class MainWindow(QMainWindow):
     def _start_new_game(self):
         start_game()
         self.game_active = True
-        self._update_status(f"White to move | Mode: {self._get_mode_display()}")
+        self._update_status_display()
         self._show_message("Game ready. Click a piece to start.")
         self._update_stats_bar()
 
     def _check_game_over(self):
         if not self.board.is_game_over():
             return False
-        
+
         self.board_widget.set_interaction_enabled(False)
         self.game_active = False
-        
+
         result = self.board.result()
-        
+
         if self.board.is_checkmate():
             winner = "Black" if self.board.turn == chess.WHITE else "White"
             self._update_status(f"Checkmate! {winner} wins!")
@@ -598,152 +602,202 @@ class MainWindow(QMainWindow):
             self._update_status("Draw - insufficient material")
         else:
             self._update_status(f"Game over: {result}")
-        
-        # End game and get feedback
+
         feedback = end_game(result)
-        
-        # Show game summary dialog
+
         dialog = GameSummaryDialog(feedback, result, self)
         dialog.exec()
-        
-        # Also update output panel
+
         summary = feedback.get('summary', '')
         self.output.append(f"\n\n<b>Game Summary:</b><br>{summary}")
-        
+
         return True
 
-    def _handle_player_move(self, move):
-        if self.engine is None:
-            self._show_message("Engine not available.")
-            return
+        def _handle_player_move(self, move):
+            if self.engine is None:
+                self._show_message("Engine not available.")
+                return
 
-        if self.board.is_game_over():
-            return
+            if self.board.is_game_over():
+                return
 
-        warning = analyze_pre_move_threats(
-            self.board,
-            chess.WHITE if self.player_is_white else chess.BLACK,
-            self.instructor_mode
-        )
+            # Save FEN before player move for undo
+            self.undo_stack.append(self.board.fen())
 
-        self.undo_fen = self.board.fen()
+            warning = analyze_pre_move_threats(
+                self.board,
+                chess.WHITE if self.player_is_white else chess.BLACK,
+                self.instructor_mode
+            )
 
-        analysis_before = self.engine.analyze(self.board)
-        board_before = self.board.copy()
+            analysis_before = self.engine.analyze(self.board)
+            board_before = self.board.copy()
 
-        board_after = self.board.copy()
-        board_after.push(move)
-        analysis_after = self.engine.analyze(board_after)
+            board_after = self.board.copy()
+            board_after.push(move)
+            analysis_after = self.engine.analyze(board_after)
 
-        assessment = assess_move(
-            move_played=move,
-            eval_initial=analysis_before.cp_score_white,
-            eval_final=analysis_after.cp_score_white,
-            best_move=analysis_before.best_move,
-            player_is_white=self.player_is_white,
-            board_before=board_before,
-            board_after=board_after,
-            engine=self.engine
-        )
+            # Top 3 alternatives — called once here, shown in panel
+            alternatives = self.engine.analyze_multipv(self.board, n=3)
 
-        # Record move for stats
-        record_move(assessment.grade, assessment.explanation)
-        self._update_stats_bar()
+            assessment = assess_move(
+                move_played=move,
+                eval_initial=analysis_before.cp_score_white,
+                eval_final=analysis_after.cp_score_white,
+                best_move=analysis_before.best_move,
+                player_is_white=self.player_is_white,
+                board_before=board_before,
+                board_after=board_after,
+                engine=self.engine
+            )
 
-        move_san = self.board.san(move)
-        best_san = None
-        if assessment.best_move and assessment.best_move != move:
-            try:
-                best_san = self.board.san(assessment.best_move)
-            except:
-                pass
+            record_move(assessment.grade, assessment.explanation)
+            self._update_stats_bar()
 
-        grade_color = GRADE_COLORS.get(assessment.grade, "#000000")
-        
-        html = f"<b>Your move:</b> {move_san}<br>"
-        html += f"<b>Eval:</b> {assessment.eval_initial/100:+.2f} → {assessment.eval_final/100:+.2f}<br>"
-        html += f"<b>Grade:</b> <span style='color:{grade_color}'>{assessment.grade.name}</span><br>"
-        
-        if best_san and not assessment.was_best_move:
-            html += f"<b>Best was:</b> {best_san}<br>"
-        
-        html += f"<br>{assessment.explanation}"
-        
-        if warning:
-            html = f"<i>Note: {warning}</i><br><br>" + html
+            if self.difficulty_mode == "adaptive":
+                self._apply_adaptive_difficulty()
 
-        self.output.setHtml(html)
+            move_san = self.board.san(move)
+            best_san = None
+            if assessment.best_move and assessment.best_move != move:
+                try:
+                    best_san = self.board.san(assessment.best_move)
+                except Exception:
+                    pass
 
-        # Set visual cues from assessment
-        if assessment.visual_cues:
-            self.board_widget.set_visual_cues(assessment.visual_cues)
-        else:
-            self.board_widget.set_visual_cues(None)
+            grade_color = GRADE_COLORS.get(assessment.grade, "#000000")
 
-        self.board.push(move)
-        self.board_widget.set_board(self.board)
-        self.board_widget.set_last_move(move)
+            html = f"<b>Your move:</b> {move_san}<br>"
+            html += (
+                f"<b>Eval:</b> "
+                f"{assessment.eval_initial / 100:+.2f} → "
+                f"{assessment.eval_final / 100:+.2f}<br>"
+            )
+            html += (
+                f"<b>Grade:</b> "
+                f"<span style='color:{grade_color}'>{assessment.grade.name}</span><br>"
+            )
 
-        if self._check_game_over():
-            self.undo_btn.setEnabled(True)
-            return
+            if best_san and not assessment.was_best_move:
+                html += f"<b>Best was:</b> {best_san}<br>"
 
-        self._update_status("Engine thinking...")
-        self.board_widget.set_interaction_enabled(False)
-        QApplication.processEvents()
+            html += f"<br>{assessment.explanation}"
 
-        engine_move = self.engine.get_move(self.board, time_limit=ENGINE_MOVE_TIME)
-        
-        if engine_move:
-            engine_san = self.board.san(engine_move)
-            self.board.push(engine_move)
+            # --- Top 3 alternatives block ---
+            if alternatives:
+                alt_parts = []
+                rank = 1
+                played_uci = move.uci()
+
+                for alt in alternatives:
+                    try:
+                        alt_san = self.board.san(alt.move)
+                    except Exception:
+                        alt_san = alt.move.uci()
+
+                    # Mark the move the player actually played
+                    if alt.move.uci() == played_uci:
+                        marker = " ✓"
+                    else:
+                        marker = ""
+
+                    if alt.is_mate:
+                        score_str = f"M{abs(alt.mate_in)}" if alt.mate_in else "M?"
+                    else:
+                        score_str = f"{alt.cp_score_white / 100:+.2f}"
+
+                    alt_parts.append(f"{rank}. {alt_san}{marker} ({score_str})")
+                    rank += 1
+
+                html += "<br><br><b>Top moves:</b> " + " &nbsp; ".join(alt_parts)
+
+            if warning:
+                html = f"<i style='color:#f97316'>⚠ {warning}</i><br><br>" + html
+
+            self.output.setHtml(html)
+
+            if assessment.visual_cues:
+                self.board_widget.set_visual_cues(assessment.visual_cues)
+            else:
+                self.board_widget.set_visual_cues(None)
+
+            self.board.push(move)
             self.board_widget.set_board(self.board)
-            self.board_widget.set_last_move(engine_move)
-            
-            current_html = self.output.toHtml()
-            self.output.setHtml(current_html + f"<br><b>Engine plays:</b> {engine_san}")
+            self.board_widget.set_last_move(move)
 
-        self.board_widget.set_interaction_enabled(True)
-        self.undo_btn.setEnabled(True)
+            if self._check_game_over():
+                self.undo_btn.setEnabled(True)
+                return
 
-        if not self._check_game_over():
-            self._update_status_display()
+            self._update_status("Engine thinking...")
+            self.board_widget.set_interaction_enabled(False)
+            QApplication.processEvents()
+
+            engine_move = self.engine.get_move(self.board)
+
+            if engine_move:
+                engine_san = self.board.san(engine_move)
+                self.board.push(engine_move)
+                self.board_widget.set_board(self.board)
+                self.board_widget.set_last_move(engine_move)
+
+                current_html = self.output.toHtml()
+                self.output.setHtml(
+                    current_html + f"<br><b>Engine plays:</b> {engine_san}"
+                )
+
+            self.board_widget.set_interaction_enabled(True)
+            self.undo_btn.setEnabled(len(self.undo_stack) > 0)
+
+            if not self._check_game_over():
+                self._update_status_display()
 
     def _undo(self):
-        if not self.undo_fen:
+        """Undo last player move + engine reply together (2 plies)."""
+        if not self.undo_stack:
             return
 
-        self.board = chess.Board(self.undo_fen)
+        # Restore to state before player's last move
+        fen = self.undo_stack.pop()
+        self.board = chess.Board(fen)
         self.board_widget.set_board(self.board)
         self.board_widget.set_last_move(None)
         self.board_widget.set_visual_cues(None)
         self.board_widget.set_interaction_enabled(True)
-        self.undo_fen = None
-        self.undo_btn.setEnabled(False)
+
+        self.undo_btn.setEnabled(len(self.undo_stack) > 0)
         self._show_message("Move undone.")
         self._update_status_display()
 
     def _new_game(self):
-        # If game is active, end it first
         if self.game_active:
             end_game(None)
-        
+
         self.board = chess.Board()
         self.board_widget.set_board(self.board)
         self.board_widget.set_last_move(None)
         self.board_widget.set_visual_cues(None)
         self.board_widget.set_interaction_enabled(True)
-        self.undo_fen = None
+        self.undo_stack.clear()
         self.undo_btn.setEnabled(False)
         reset_adaptive_state()
-        
+
+        # Re-apply difficulty on new game
+        if self.engine:
+            if self.difficulty_mode == "adaptive":
+                self.engine.set_difficulty("intermediate")
+            else:
+                self.engine.set_difficulty(self.difficulty_mode)
+
         self._start_new_game()
 
+    def _show_profile(self):
+        dialog = ProfileDialog(self)
+        dialog.exec()
+
     def closeEvent(self, event):
-        # End current game if active
         if self.game_active:
             end_game(None)
-        
         if self.engine:
             try:
                 self.engine.stop()
