@@ -46,11 +46,12 @@ MATE_THRESHOLD = 50000
 
 
 class ChessEngine:
-    def __init__(self, stockfish_path: str, depth: int = 15):
+    def __init__(self, stockfish_path: str, depth: int = 15, num_threads: int = 1):
         self.stockfish_path = stockfish_path
         self.depth = depth
         self.skill_level = 20
         self.move_time = 1.0
+        self.num_threads = num_threads
         self._engine: Optional[chess.engine.SimpleEngine] = None
 
     def start(self) -> None:
@@ -64,10 +65,14 @@ class ChessEngine:
             self._engine = None
 
     def _apply_skill(self) -> None:
-        """Push current skill level to engine. Called after start and after skill changes."""
+        """Push current skill level and threads to engine."""
         if self._engine is None:
             return
         try:
+            # Thread count
+            self._engine.configure({"Threads": self.num_threads})
+            
+            # Skill/Elo
             if self.skill_level < 20:
                 self._engine.configure({
                     "UCI_LimitStrength": True,

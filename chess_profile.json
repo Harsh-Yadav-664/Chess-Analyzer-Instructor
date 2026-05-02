@@ -1,0 +1,16 @@
+{
+  "games_played": 3,
+  "total_moves": 98,
+  "aggregate_grades": {
+    "5": 14,
+    "2": 20,
+    "6": 24,
+    "4": 10,
+    "3": 8,
+    "1": 22
+  },
+  "aggregate_categories": {
+    "piece_safety": 18,
+    "mate_threats": 7
+  }
+}
