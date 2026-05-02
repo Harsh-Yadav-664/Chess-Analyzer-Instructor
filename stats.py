@@ -155,20 +155,25 @@ class PlayerProfile:
         return self.aggregate_grades.get(int(MoveGrade.BLUNDER), 0) / self.total_moves
     
     def to_dict(self) -> dict:
+        """Serialize profile to dictionary for JSON storage."""
         return {
             "games_played": self.games_played,
             "total_moves": self.total_moves,
-            "aggregate_grades": self.aggregate_grades,
+            "aggregate_grades": {str(k): v for k, v in self.aggregate_grades.items()},  # Convert int keys to strings for JSON
             "aggregate_categories": self.aggregate_categories
         }
     
     @staticmethod
     def from_dict(data: dict) -> 'PlayerProfile':
+        """Deserialize profile from dictionary (loaded from JSON)."""
         p = PlayerProfile()
         p.games_played = data.get("games_played", 0)
         p.total_moves = data.get("total_moves", 0)
+        
+        # Convert string keys back to int for grades
         p.aggregate_grades = {int(k): v for k, v in data.get("aggregate_grades", {}).items()}
         p.aggregate_categories = data.get("aggregate_categories", {})
+        
         return p
 
 
@@ -206,9 +211,9 @@ def generate_game_summary(stats: GameStats, result: Optional[str] = None) -> str
     # Overall performance
     error_total = blunders + mistakes + inaccuracies
     if error_total == 0:
-        lines.append("Excellent game with no significant errors.")
+        lines.append("Excellent game with no significant errors!")
     elif blunders >= 3:
-        lines.append(f"Difficult game with {blunders} blunders.")
+        lines.append(f"Challenging game with {blunders} blunders.")
     elif blunders >= 1:
         lines.append(f"Game had {blunders} blunder(s) and {mistakes} mistake(s).")
     elif mistakes >= 2:
@@ -220,11 +225,11 @@ def generate_game_summary(stats: GameStats, result: Optional[str] = None) -> str
     main_issue = stats.get_most_common_category()
     if main_issue and stats.categories.get(main_issue, 0) >= 2:
         label = CATEGORY_LABELS.get(main_issue, main_issue)
-        lines.append(f"Most issues came from {label}.")
+        lines.append(f"Focus area: {label}.")
     
     # Good moves note
     if good_moves >= stats.move_count * 0.7:
-        lines.append("Majority of moves were good or better.")
+        lines.append("Strong performance - majority of moves were good or better!")
     
     return " ".join(lines)
 
@@ -232,58 +237,95 @@ def generate_game_summary(stats: GameStats, result: Optional[str] = None) -> str
 def generate_profile_summary(profile: PlayerProfile) -> str:
     """Generate a player profile snapshot."""
     if profile.games_played == 0:
-        return "No games played yet."
+        return "No games played yet. Start playing to build your profile!"
     
     lines = []
     
-    lines.append(f"Games played: {profile.games_played}")
-    lines.append(f"Total moves: {profile.total_moves}")
+    lines.append(f"<b>Games played:</b> {profile.games_played}")
+    lines.append(f"<b>Total moves:</b> {profile.total_moves}")
     
     error_rate = profile.get_error_rate()
     blunder_rate = profile.get_blunder_rate()
     
+    lines.append("")
+    
     if blunder_rate < 0.05:
-        lines.append("Strength: Avoids major blunders.")
+        lines.append("✓ <b>Strength:</b> You avoid major blunders consistently.")
     elif blunder_rate > 0.15:
-        lines.append("Weakness: Frequent blunders.")
+        lines.append("⚠ <b>Area to improve:</b> Reduce frequency of blunders.")
     
     if error_rate < 0.2:
-        lines.append("Overall: Accurate player.")
+        lines.append("✓ <b>Accuracy:</b> You play accurately overall.")
     elif error_rate > 0.4:
-        lines.append("Overall: Many errors to work on.")
+        lines.append("⚠ <b>Accuracy:</b> Many errors - focus on careful calculation.")
+    else:
+        lines.append("○ <b>Accuracy:</b> Room for improvement with consistent practice.")
     
     main_issue = profile.get_most_common_issue()
     if main_issue:
         label = CATEGORY_LABELS.get(main_issue, main_issue)
-        lines.append(f"Frequent issue: {label}.")
+        lines.append(f"📌 <b>Most common issue:</b> {label}")
     
-    return " ".join(lines)
+    return "<br>".join(lines)
 
 
 def generate_training_suggestion(profile: PlayerProfile) -> Optional[str]:
-    """Generate a high-level training suggestion."""
+    """Generate a high-level training suggestion based on profile."""
     if profile.total_moves < 20:
-        return None
+        return "Play more games to get personalized training recommendations."
     
     main_issue = profile.get_most_common_issue()
     if not main_issue:
-        return None
+        return "Keep playing and your patterns will emerge!"
     
     suggestions = {
-        "mate_threats": "Practice recognizing checkmate patterns.",
-        "piece_safety": "Focus on keeping pieces defended.",
-        "forks": "Study knight fork patterns.",
-        "pins": "Work on recognizing pin vulnerabilities.",
-        "skewers": "Practice avoiding skewer tactics.",
-        "discovered_attacks": "Watch for discovered attack setups.",
-        "back_rank": "Practice back rank mate prevention.",
-        "overloaded_defenders": "Focus on piece coordination.",
-        "forced_positions": "Study defensive technique in critical positions.",
-        "lost_positions": "Work on avoiding early disadvantages.",
-        "material_loss": "Focus on piece safety and exchanges.",
+        "mate_threats": (
+            "Practice checkmate pattern recognition with puzzles. "
+            "Learn common mating patterns like back rank mate, smothered mate, and two rooks checkmate."
+        ),
+        "piece_safety": (
+            "Focus on keeping your pieces defended. "
+            "Before every move, check: Are all my pieces protected? Can my opponent capture anything for free?"
+        ),
+        "forks": (
+            "Study knight fork patterns and tactics. "
+            "Practice spotting when enemy pieces can attack multiple targets at once."
+        ),
+        "pins": (
+            "Work on recognizing pin vulnerabilities. "
+            "Be aware of when your pieces are pinned to your king or queen, and avoid creating pins against yourself."
+        ),
+        "skewers": (
+            "Practice avoiding skewer tactics. "
+            "When your valuable piece is attacked, check what's behind it on the same line."
+        ),
+        "discovered_attacks": (
+            "Study discovered attack patterns. "
+            "Watch for pieces that could create threats when they move out of the way."
+        ),
+        "back_rank": (
+            "Practice back rank mate prevention. "
+            "Always ensure your king has an escape square, or keep a defender on the back rank."
+        ),
+        "overloaded_defenders": (
+            "Focus on piece coordination. "
+            "Ensure important squares are defended by multiple pieces, not just one overworked piece."
+        ),
+        "forced_positions": (
+            "Study defensive technique in critical positions. "
+            "Sometimes accepting a small disadvantage is better than trying to avoid it and making things worse."
+        ),
+        "lost_positions": (
+            "Work on avoiding early disadvantages. "
+            "Study opening principles: develop pieces, control center, castle early, connect rooks."
+        ),
+        "material_loss": (
+            "Practice calculating exchanges before trading pieces. "
+            "Count material values: Pawn=1, Knight/Bishop=3, Rook=5, Queen=9."
+        ),
     }
     
-    return suggestions.get(main_issue)
+    return suggestions.get(main_issue, "Continue practicing and analyzing your games!")
 
 
 def generate_game_feedback(stats: GameStats, result: Optional[str] = None) -> dict:
@@ -340,6 +382,7 @@ class SessionManager:
     def reset_profile(self):
         """Clear all historical data."""
         self.profile = PlayerProfile()
+        self.current_game = None
     
     def get_current_stats(self) -> Optional[GameStats]:
         return self.current_game
@@ -353,28 +396,35 @@ _session = SessionManager()
 
 
 def start_game():
+    """Start a new game session."""
     _session.start_game()
 
 
 def record_move(grade: MoveGrade, explanation: str):
+    """Record a move assessment."""
     _session.record_move(grade, explanation)
 
 
 def end_game(result: Optional[str] = None) -> dict:
+    """End current game and return feedback."""
     return _session.end_game(result)
 
 
 def get_profile_summary() -> str:
+    """Get formatted profile summary."""
     return _session.get_profile_summary()
 
 
 def get_training_suggestion() -> Optional[str]:
+    """Get personalized training suggestion."""
     return _session.get_training_suggestion()
 
 
 def reset_profile():
+    """Reset all profile data."""
     _session.reset_profile()
 
 
 def get_session() -> SessionManager:
+    """Get the session manager instance."""
     return _session
