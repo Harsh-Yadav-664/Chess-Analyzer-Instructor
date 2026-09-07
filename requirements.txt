@@ -1,0 +1,5 @@
+python-chess>=1.999
+flask>=2.3
+flask-cors>=4.0
+flask-session>=0.5
+PyQt6>=6.4
