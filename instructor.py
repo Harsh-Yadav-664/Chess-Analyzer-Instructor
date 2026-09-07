@@ -2,15 +2,14 @@
 AI Chess Instructor — instructor.py
 Enhanced tactical move assessment with improved explanations and visual cues.
 
-Features:
-- Deep tactical pattern detection (forks, pins, skewers, discoveries, etc.)
-- Context-aware explanations with chess principles
-- Adaptive verbosity based on player level
-- Rich visual feedback system
-- Pattern-based learning hints
+Improved version:
+- Added CoachSession class to eliminate module-global adaptive state (fixes web-unsafe globals)
+- assess_move now accepts explicit coach_mode and coach_session (backward compat with globals)
+- Added set_coach_mode() to make dropdown actually work (was no-op before)
+- All detectors unchanged, but now thread-safe per session
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional, Dict, List, Tuple
 import chess
@@ -78,21 +77,13 @@ def _calculate_centipawn_loss(e0: int, e1: int, is_white: bool) -> int:
     return (e0 - e1) if is_white else (e1 - e0)
 
 
-def _determine_grade(cp_loss: int, was_best: bool) -> MoveGrade:
-    """
-    Grade a move based on centipawn loss.
-    Thresholds adjust based on current adaptive mode.
-    """
+def _determine_grade_with_mode(cp_loss: int, was_best: bool, mode: str) -> MoveGrade:
+    """Grade a move based on centipawn loss and explicit mode."""
     if was_best:
         return MoveGrade.BEST
-
     loss = max(0, cp_loss)
-
     if loss >= MATE_THRESHOLD:
         return MoveGrade.BLUNDER
-
-    mode = get_current_mode()
-
     # Adaptive strictness
     if mode == "learning":
         if loss <= 20:
@@ -104,7 +95,6 @@ def _determine_grade(cp_loss: int, was_best: bool) -> MoveGrade:
         if loss <= 150:
             return MoveGrade.MISTAKE
         return MoveGrade.BLUNDER
-
     elif mode == "easy":
         if loss <= 15:
             return MoveGrade.EXCELLENT
@@ -115,7 +105,6 @@ def _determine_grade(cp_loss: int, was_best: bool) -> MoveGrade:
         if loss <= 120:
             return MoveGrade.MISTAKE
         return MoveGrade.BLUNDER
-
     elif mode == "medium":
         if loss <= 10:
             return MoveGrade.EXCELLENT
@@ -126,7 +115,6 @@ def _determine_grade(cp_loss: int, was_best: bool) -> MoveGrade:
         if loss <= 100:
             return MoveGrade.MISTAKE
         return MoveGrade.BLUNDER
-
     else:  # "hard"
         if loss <= 5:
             return MoveGrade.EXCELLENT
@@ -139,53 +127,131 @@ def _determine_grade(cp_loss: int, was_best: bool) -> MoveGrade:
         return MoveGrade.BLUNDER
 
 
+def _determine_grade(cp_loss: int, was_best: bool, mode: Optional[str] = None) -> MoveGrade:
+    """Backward compat wrapper - uses explicit mode if provided, else global."""
+    if mode is None:
+        mode = get_current_mode()
+    return _determine_grade_with_mode(cp_loss, was_best, mode)
+
+
 def _square_name(sq: int) -> str:
-    """Get algebraic name of square (e.g., 'e4')."""
     return chess.square_name(sq)
 
 
 def _piece_name(piece_type: int) -> str:
-    """Get human-readable piece name."""
     return PIECE_NAMES.get(piece_type, "piece")
 
 
 def _piece_value(piece_type: int) -> int:
-    """Get material value of piece type."""
     return PIECE_VALUES.get(piece_type, 0)
 
 
 # =========================================================
-# Adaptive Mode State
+# Adaptive Mode State - NOW WITH SESSION CLASS
 # =========================================================
 
+@dataclass
+class CoachSession:
+    """Per-game/per-user coach state. Replaces module globals for web safety."""
+    mode: str = "hard"  # hard, medium, easy, learning
+    instructor_mode: str = "adaptive"  # adaptive, learning, easy, medium, hard
+    move_history: List[MoveGrade] = field(default_factory=list)
+
+    def reset(self):
+        self.mode = "hard"
+        self.move_history = []
+
+    def update(self, grade: MoveGrade):
+        self.move_history.append(grade)
+        if len(self.move_history) < 4:
+            return
+        recent = self.move_history[-6:]
+        bad = sum(1 for g in recent if g <= MoveGrade.MISTAKE)
+        ratio = bad / len(recent)
+        if ratio >= 0.5:
+            self.mode = "learning"
+        elif ratio >= 0.25:
+            self.mode = "easy"
+        elif ratio >= 0.1:
+            self.mode = "medium"
+        else:
+            self.mode = "hard"
+
+    def get_effective_mode(self) -> str:
+        """If instructor_mode is not adaptive, use that; else use adaptive mode."""
+        if self.instructor_mode == "adaptive":
+            return self.mode
+        return self.instructor_mode
+
+    def set_instructor_mode(self, mode: str):
+        self.instructor_mode = mode
+        # If user explicitly picks easy/medium/hard/learning, set mode directly too
+        if mode != "adaptive":
+            self.mode = mode
+
+    def to_dict(self) -> dict:
+        return {
+            "mode": self.mode,
+            "instructor_mode": self.instructor_mode,
+            "move_history": [int(g) for g in self.move_history]
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> 'CoachSession':
+        cs = CoachSession()
+        cs.mode = data.get("mode", "hard")
+        cs.instructor_mode = data.get("instructor_mode", "adaptive")
+        cs.move_history = [MoveGrade(g) for g in data.get("move_history", [])]
+        return cs
+
+
+# Module globals for backward compat (desktop GUI uses these)
 _current_mode = "hard"
 _move_history: List[MoveGrade] = []
+_global_coach = CoachSession(mode="hard", instructor_mode="adaptive")
 
 
 def reset_adaptive_state():
-    """Reset adaptive mode tracking (called on new game)."""
-    global _current_mode, _move_history
+    """Reset adaptive mode tracking (called on new game). Backward compat."""
+    global _current_mode, _move_history, _global_coach
     _current_mode = "hard"
     _move_history = []
+    _global_coach.reset()
 
 
 def get_current_mode() -> str:
-    """Get current adaptive mode level."""
+    """Get current adaptive mode level. Backward compat."""
     return _current_mode
 
 
-def _update_adaptive_mode(grade: MoveGrade):
+def set_coach_mode(mode: str):
+    """NEW: Actually make the dropdown work. Sets the global coach mode."""
+    global _current_mode, _global_coach
+    if mode in ("learning", "easy", "medium", "hard"):
+        _current_mode = mode
+        _global_coach.mode = mode
+        _global_coach.instructor_mode = mode
+    elif mode == "adaptive":
+        _global_coach.instructor_mode = "adaptive"
+        # keep current adaptive level
+
+
+def _update_adaptive_mode(grade: MoveGrade, session: Optional[CoachSession] = None):
     """Adjust coaching strictness based on recent move quality."""
-    global _current_mode, _move_history
+    global _current_mode, _move_history, _global_coach
+    if session is not None:
+        # Per-session update
+        session.update(grade)
+        return
+
+    # Global fallback
     _move_history.append(grade)
-    
+    _global_coach.move_history.append(grade)
     if len(_move_history) < 4:
         return
-    
     recent = _move_history[-6:]
     bad = sum(1 for g in recent if g <= MoveGrade.MISTAKE)
     ratio = bad / len(recent)
-    
     if ratio >= 0.5:
         _current_mode = "learning"
     elif ratio >= 0.25:
@@ -194,14 +260,19 @@ def _update_adaptive_mode(grade: MoveGrade):
         _current_mode = "medium"
     else:
         _current_mode = "hard"
+    _global_coach.mode = _current_mode
+
+
+def create_coach_session(instructor_mode: str = "adaptive") -> CoachSession:
+    """Factory for per-user coach sessions (for web)."""
+    return CoachSession(mode="hard", instructor_mode=instructor_mode)
 
 
 # =========================================================
-# Enhanced Tactical Detectors
+# Enhanced Tactical Detectors (unchanged logic)
 # =========================================================
 
 def _detect_missed_mate(eval_initial: int, eval_final: int, player_is_white: bool) -> Optional[str]:
-    """Detect if player had checkmate and missed it."""
     player_had_mate = (
         (player_is_white and eval_initial >= MATE_THRESHOLD) or
         (not player_is_white and eval_initial <= -MATE_THRESHOLD)
@@ -210,23 +281,18 @@ def _detect_missed_mate(eval_initial: int, eval_final: int, player_is_white: boo
         (player_is_white and eval_final >= MATE_THRESHOLD) or
         (not player_is_white and eval_final <= -MATE_THRESHOLD)
     )
-    
     if player_had_mate and not player_still_has_mate:
         return "You missed a forced checkmate sequence. Always look for checkmate before making other moves."
-    
     return None
 
 
 def _detect_allowed_mate(eval_final: int, player_is_white: bool) -> Optional[str]:
-    """Detect if player's move allowed opponent's checkmate."""
     opponent_has_mate = (
         (player_is_white and eval_final <= -MATE_THRESHOLD) or
         (not player_is_white and eval_final >= MATE_THRESHOLD)
     )
-    
     if opponent_has_mate:
         return "This move allows your opponent to force checkmate. Always check for opponent's checkmate threats before moving."
-    
     return None
 
 
@@ -235,43 +301,33 @@ def _detect_missed_capture(
     move_played: chess.Move,
     player_color: chess.Color
 ) -> Optional[str]:
-    """Detect if player missed a free (undefended) capture."""
     opponent = not player_color
     best_free_capture = None
     best_value = 0
-
     for move in board_before.legal_moves:
         if move == move_played:
             continue
-        
         target = board_before.piece_at(move.to_square)
         if target is None or target.color != opponent:
             continue
-        
-        # Check if it's truly free
         test = board_before.copy()
         test.push(move)
         recapturable = test.is_attacked_by(opponent, move.to_square)
-        
         if not recapturable:
             val = _piece_value(target.piece_type)
             if val > best_value:
                 best_value = val
                 best_free_capture = (move, target)
-
     if best_free_capture is None:
         return None
-
     played_capture = board_before.piece_at(move_played.to_square)
     played_value = _piece_value(played_capture.piece_type) if played_capture else 0
-
     if best_value > played_value + 50:
         move, target = best_free_capture
         return (
             f"You missed a free {_piece_name(target.piece_type)} on {_square_name(move.to_square)}. "
             f"Always scan for undefended enemy pieces before moving."
         )
-    
     return None
 
 
@@ -281,44 +337,34 @@ def _detect_hung_piece(
     move_played: chess.Move,
     player_color: chess.Color
 ) -> Optional[str]:
-    """Detect if player left a piece hanging (newly undefended)."""
     opponent = not player_color
     worst_value = 0
     worst_report = None
-
     for sq in chess.SQUARES:
         piece = board_after.piece_at(sq)
         if piece is None or piece.color != player_color:
             continue
         if piece.piece_type == chess.KING:
             continue
-
         attacked_after = board_after.is_attacked_by(opponent, sq)
         defended_after = board_after.is_attacked_by(player_color, sq)
-        
         if not (attacked_after and not defended_after):
             continue
-
-        # Check if it was already hanging before
         attacked_before = board_before.is_attacked_by(opponent, sq)
         defended_before = board_before.is_attacked_by(player_color, sq)
         was_hanging = attacked_before and not defended_before
-        
         if was_hanging:
             continue
-
         val = _piece_value(piece.piece_type)
         if val > worst_value:
             worst_value = val
             worst_report = (sq, piece)
-
     if worst_report:
         sq, piece = worst_report
         return (
             f"Your {_piece_name(piece.piece_type)} on {_square_name(sq)} is now hanging — "
             f"it's attacked but undefended. Always check if your pieces remain protected after moving."
         )
-    
     return None
 
 
@@ -326,30 +372,25 @@ def _detect_fork_allowed(
     board_after: chess.Board,
     player_color: chess.Color
 ) -> Optional[str]:
-    """Detect if player's move allowed opponent to create a fork."""
     opponent = not player_color
     best_fork = None
     best_fork_value = 0
-
     for sq in chess.SQUARES:
         piece = board_after.piece_at(sq)
         if piece is None or piece.color != opponent:
             continue
-
         attacked_targets = []
         for target_sq in board_after.attacks(sq):
             target = board_after.piece_at(target_sq)
             if target and target.color == player_color:
                 val = _piece_value(target.piece_type)
-                if val >= 300:  # Only count valuable pieces
+                if val >= 300:
                     attacked_targets.append((target_sq, target, val))
-
         if len(attacked_targets) >= 2:
             fork_value = sum(v for _, _, v in attacked_targets)
             if fork_value > best_fork_value:
                 best_fork_value = fork_value
                 best_fork = (sq, piece, attacked_targets)
-
     if best_fork:
         fork_sq, fork_piece, targets = best_fork
         target_strs = " and ".join(
@@ -361,7 +402,6 @@ def _detect_fork_allowed(
             f"on {_square_name(fork_sq)} now attacks your {target_strs}. "
             f"Watch for enemy pieces that can attack multiple targets simultaneously."
         )
-    
     return None
 
 
@@ -369,23 +409,18 @@ def _detect_pin_created(
     board_after: chess.Board,
     player_color: chess.Color
 ) -> Optional[str]:
-    """Detect if player's piece is now pinned to the king."""
     opponent = not player_color
     king_sq = board_after.king(player_color)
     if king_sq is None:
         return None
-
     for sq in chess.SQUARES:
         piece = board_after.piece_at(sq)
         if piece is None or piece.color != player_color:
             continue
         if piece.piece_type == chess.KING:
             continue
-
-        # Test if moving this piece exposes king
         test = board_after.copy()
         test.remove_piece_at(sq)
-        
         if test.is_attacked_by(opponent, king_sq):
             attackers = test.attackers(opponent, king_sq)
             if attackers:
@@ -398,7 +433,6 @@ def _detect_pin_created(
                         f"{_piece_name(attacker.piece_type)} on {_square_name(attacker_sq)}. "
                         f"Pinned pieces have limited mobility and are vulnerable."
                     )
-    
     return None
 
 
@@ -407,56 +441,41 @@ def _detect_skewer(
     board_after: chess.Board,
     player_color: chess.Color
 ) -> Optional[str]:
-    """
-    Detect skewer: high-value piece attacked, low-value piece behind it.
-    If high-value piece moves, low-value piece gets captured.
-    """
     opponent = not player_color
     SLIDING = {chess.BISHOP, chess.ROOK, chess.QUEEN}
     HIGH_VALUE_THRESHOLD = 500
-
     for opp_sq in chess.SQUARES:
         opp_piece = board_after.piece_at(opp_sq)
         if opp_piece is None or opp_piece.color != opponent:
             continue
         if opp_piece.piece_type not in SLIDING:
             continue
-
         for attack_sq in board_after.attacks(opp_sq):
             front_piece = board_after.piece_at(attack_sq)
             if front_piece is None or front_piece.color != player_color:
                 continue
             if _piece_value(front_piece.piece_type) < HIGH_VALUE_THRESHOLD:
                 continue
-
-            # Check if this is a new threat
             already_before = board_before.is_attacked_by(opponent, attack_sq)
             if already_before:
                 before_attackers = board_before.attackers(opponent, attack_sq)
                 same_attacker_before = opp_sq in before_attackers
                 if same_attacker_before:
                     continue
-
-            # Find piece behind
             opp_file = chess.square_file(opp_sq)
             opp_rank = chess.square_rank(opp_sq)
             att_file = chess.square_file(attack_sq)
             att_rank = chess.square_rank(attack_sq)
-
             df = att_file - opp_file
             dr = att_rank - opp_rank
-
             steps = max(abs(df), abs(dr))
             if steps == 0:
                 continue
-            
             df = df // steps
             dr = dr // steps
-
             cur_file = att_file + df
             cur_rank = att_rank + dr
             found_behind = None
-
             while 0 <= cur_file <= 7 and 0 <= cur_rank <= 7:
                 behind_sq = chess.square(cur_file, cur_rank)
                 behind_piece = board_after.piece_at(behind_sq)
@@ -469,7 +488,6 @@ def _detect_skewer(
                     break
                 cur_file += df
                 cur_rank += dr
-
             if found_behind:
                 behind_sq, behind_piece = found_behind
                 return (
@@ -478,7 +496,6 @@ def _detect_skewer(
                     f"If it moves, your {_piece_name(behind_piece.piece_type)} on {_square_name(behind_sq)} "
                     f"will be captured. Look for ways to break the skewer or protect the back piece."
                 )
-
     return None
 
 
@@ -488,24 +505,15 @@ def _detect_discovered_attack(
     move_played: chess.Move,
     player_color: chess.Color
 ) -> Optional[str]:
-    """Detect if moving created a discovered attack opportunity."""
-    # Check if moving the piece opened up an attack line
-    from_sq = move_played.from_square
-    
-    # Get pieces behind the moved piece that could now attack
     for potential_attacker_sq in chess.SQUARES:
         piece = board_after.piece_at(potential_attacker_sq)
         if piece is None or piece.color != player_color:
             continue
         if piece.piece_type not in {chess.BISHOP, chess.ROOK, chess.QUEEN}:
             continue
-        
-        # Check if this piece now attacks something valuable it couldn't before
         attacks_after = board_after.attacks(potential_attacker_sq)
         attacks_before = board_before.attacks(potential_attacker_sq)
-        
         new_attacks = attacks_after - attacks_before
-        
         for target_sq in new_attacks:
             target = board_after.piece_at(target_sq)
             if target and target.color != player_color:
@@ -516,7 +524,6 @@ def _detect_discovered_attack(
                         f"now attacks the opponent's {_piece_name(target.piece_type)} "
                         f"on {_square_name(target_sq)}."
                     )
-    
     return None
 
 
@@ -525,7 +532,6 @@ def _detect_center_control_loss(
     board_after: chess.Board,
     player_color: chess.Color
 ) -> Optional[str]:
-    """Detect meaningful loss of center control."""
     def center_influence(board: chess.Board, color: chess.Color) -> int:
         score = 0
         for sq in CENTER_SQUARES:
@@ -535,15 +541,11 @@ def _detect_center_control_loss(
             if board.is_attacked_by(color, sq):
                 score += 1
         return score
-
     before_score = center_influence(board_before, player_color)
     after_score = center_influence(board_after, player_color)
-
     if before_score < 2:
         return None
-
     loss = before_score - after_score
-
     if loss >= 3:
         return (
             "Your move significantly weakened your center control. "
@@ -555,7 +557,6 @@ def _detect_center_control_loss(
             "Your move reduced your control of the center. "
             "Central control gives your pieces more options and restricts your opponent."
         )
-
     return None
 
 
@@ -564,15 +565,12 @@ def _detect_king_safety_loss(
     board_after: chess.Board,
     player_color: chess.Color
 ) -> Optional[str]:
-    """Detect if king safety was compromised."""
     king_sq = board_after.king(player_color)
     if king_sq is None:
         return None
-
     king_file = chess.square_file(king_sq)
     king_rank = chess.square_rank(king_sq)
     direction = 1 if player_color == chess.WHITE else -1
-
     def count_shield_pawns(board: chess.Board) -> int:
         count = 0
         for df in (-1, 0, 1):
@@ -584,10 +582,8 @@ def _detect_king_safety_loss(
                 if p and p.piece_type == chess.PAWN and p.color == player_color:
                     count += 1
         return count
-
     before_shield = count_shield_pawns(board_before)
     after_shield = count_shield_pawns(board_after)
-
     if before_shield >= 2 and after_shield == 0:
         return (
             "Your move destroyed your king's pawn shield, leaving it exposed to attacks. "
@@ -598,18 +594,14 @@ def _detect_king_safety_loss(
             "Your king's pawn protection has been weakened. "
             "Be cautious about moving pawns near your king as it creates weaknesses."
         )
-
-    # Check for open file to king
     king_file_pawns_after = len(board_after.pieces(chess.PAWN, player_color) & chess.BB_FILES[king_file])
     king_file_pawns_before = len(board_before.pieces(chess.PAWN, player_color) & chess.BB_FILES[king_file])
-
     if king_file_pawns_before > 0 and king_file_pawns_after == 0:
         file_letter = "abcdefgh"[king_file]
         return (
             f"Your king is now on an open {file_letter}-file with no pawn cover. "
             f"This makes your king vulnerable to enemy rooks and queens on this file."
         )
-
     return None
 
 
@@ -618,21 +610,17 @@ def _detect_material_loss(
     board_after: chess.Board,
     player_color: chess.Color
 ) -> Optional[str]:
-    """Detect unfavorable material exchange."""
     def material(board: chess.Board, color: chess.Color) -> int:
         return sum(
             _piece_value(pt) * len(board.pieces(pt, color))
             for pt in PIECE_VALUES
             if pt != chess.KING
         )
-
     player_before = material(board_before, player_color)
     player_after = material(board_after, player_color)
     opp_before = material(board_before, not player_color)
     opp_after = material(board_after, not player_color)
-
     net = (player_after - player_before) - (opp_after - opp_before)
-
     if net <= -150:
         lost = player_before - player_after
         gained = opp_before - opp_after
@@ -645,7 +633,6 @@ def _detect_material_loss(
             "You lost material with this move. "
             "Try to maintain material equality or gain an advantage in trades."
         )
-    
     return None
 
 
@@ -655,24 +642,15 @@ def _detect_development_issue(
     move_played: chess.Move,
     player_color: chess.Color
 ) -> Optional[str]:
-    """Detect poor development choices in opening."""
-    # Only relevant in opening (first ~10 moves)
     if board_after.fullmove_number > 10:
         return None
-    
     moved_piece = board_before.piece_at(move_played.from_square)
     if moved_piece is None:
         return None
-    
-    # Moving same piece twice in opening
     if moved_piece.piece_type in {chess.KNIGHT, chess.BISHOP}:
-        # Check if this piece already moved
         back_rank = 0 if player_color == chess.WHITE else 7
         from_rank = chess.square_rank(move_played.from_square)
-        
         if from_rank != back_rank:
-            # Piece already moved before
-            # Count undeveloped pieces
             undeveloped = 0
             for sq in chess.SQUARES:
                 if chess.square_rank(sq) != back_rank:
@@ -680,21 +658,17 @@ def _detect_development_issue(
                 p = board_before.piece_at(sq)
                 if p and p.color == player_color and p.piece_type in {chess.KNIGHT, chess.BISHOP}:
                     undeveloped += 1
-            
             if undeveloped >= 2:
                 return (
                     f"You're moving your {_piece_name(moved_piece.piece_type)} again while other pieces aren't developed. "
                     f"In the opening, try to develop all your pieces before moving the same piece twice."
                 )
-    
-    # Moving queen out too early
     if moved_piece.piece_type == chess.QUEEN and board_after.fullmove_number <= 5:
         return (
             "Bringing your queen out too early can be risky — "
             "it can be attacked by developing moves, losing you time. "
             "Usually it's better to develop knights and bishops first."
         )
-    
     return None
 
 
@@ -705,18 +679,11 @@ def _detect_development_issue(
 def analyze_pre_move_threats(
     board: chess.Board,
     player_color: chess.Color,
-    mode: str
+    mode: str = "adaptive"
 ) -> Optional[str]:
-    """
-    Analyze position BEFORE player moves to warn about immediate threats.
-    Returns warning string if significant threat exists.
-    """
     opponent = not player_color
-
     if board.is_check():
         return "You are in check — you must block, move your king, or capture the attacking piece."
-
-    # Check for hanging pieces
     warnings = []
     for sq in chess.SQUARES:
         piece = board.piece_at(sq)
@@ -724,10 +691,8 @@ def analyze_pre_move_threats(
             continue
         if piece.piece_type == chess.KING:
             continue
-        
         if board.is_attacked_by(opponent, sq) and not board.is_attacked_by(player_color, sq):
             warnings.append((_piece_value(piece.piece_type), sq, piece))
-
     if warnings:
         warnings.sort(reverse=True)
         _, sq, piece = warnings[0]
@@ -735,7 +700,6 @@ def analyze_pre_move_threats(
             f"Warning: Your {_piece_name(piece.piece_type)} on {_square_name(sq)} "
             f"is currently hanging (undefended). Consider protecting it or moving it to safety."
         )
-
     return None
 
 
@@ -752,139 +716,62 @@ def _build_explanation(
     board_before: Optional[chess.Board],
     board_after: Optional[chess.Board],
     grade: MoveGrade,
+    effective_mode: Optional[str] = None
 ) -> str:
-    """
-    Build rich, context-aware explanation for the move.
-    Prioritizes specific tactical feedback over generic messages.
-    """
     player_color = chess.WHITE if player_is_white else chess.BLACK
-
     if board_before is not None and board_after is not None:
-        # Priority order: critical issues first, then positives, then general
         detectors = [
-            # Critical threats
             lambda: _detect_missed_mate(eval_initial, eval_final, player_is_white),
             lambda: _detect_allowed_mate(eval_final, player_is_white),
-            
-            # Material issues
             lambda: _detect_material_loss(board_before, board_after, player_color),
             lambda: _detect_missed_capture(board_before, move_played, player_color),
             lambda: _detect_hung_piece(board_before, board_after, move_played, player_color),
-            
-            # Tactical patterns
             lambda: _detect_fork_allowed(board_after, player_color),
             lambda: _detect_pin_created(board_after, player_color),
             lambda: _detect_skewer(board_before, board_after, player_color),
-            
-            # Positives (discovered attacks)
             lambda: _detect_discovered_attack(board_before, board_after, move_played, player_color),
-            
-            # Positional issues
             lambda: _detect_king_safety_loss(board_before, board_after, player_color),
             lambda: _detect_center_control_loss(board_before, board_after, player_color),
             lambda: _detect_development_issue(board_before, board_after, move_played, player_color),
         ]
-
         for detector in detectors:
             result = detector()
             if result:
-                return _adjust_explanation_verbosity(result, grade)
+                return _adjust_explanation_verbosity(result, grade, effective_mode)
 
-    # Fallback to generic evaluation-based feedback
     base_messages = {
-        MoveGrade.BEST: (
-            "Perfect! This is the engine's top choice. You found the strongest continuation."
-        ),
-        MoveGrade.EXCELLENT: (
-            "Excellent move! This is nearly as good as the best option and maintains your advantage."
-        ),
-        MoveGrade.GOOD: (
-            "Good move. This is a solid, reasonable choice that keeps you in the game."
-        ),
-        MoveGrade.INACCURACY: (
-            "Slight inaccuracy. While not terrible, there was a better option available. "
-            "Review the suggested move to understand what you could have improved."
-        ),
-        MoveGrade.MISTAKE: (
-            "This move worsened your position significantly. "
-            "Take time to analyze what went wrong and what the better alternative was."
-        ),
-        MoveGrade.BLUNDER: (
-            "Serious mistake! This move heavily damages your position. "
-            "Study the suggested best move carefully to understand the critical difference."
-        ),
+        MoveGrade.BEST: "Perfect! This is the engine's top choice. You found the strongest continuation.",
+        MoveGrade.EXCELLENT: "Excellent move! This is nearly as good as the best option and maintains your advantage.",
+        MoveGrade.GOOD: "Good move. This is a solid, reasonable choice that keeps you in the game.",
+        MoveGrade.INACCURACY: "Slight inaccuracy. While not terrible, there was a better option available. Review the suggested move to understand what you could have improved.",
+        MoveGrade.MISTAKE: "This move worsened your position significantly. Take time to analyze what went wrong and what the better alternative was.",
+        MoveGrade.BLUNDER: "Serious mistake! This move heavily damages your position. Study the suggested best move carefully to understand the critical difference.",
     }
+    return _adjust_explanation_verbosity(base_messages[grade], grade, effective_mode)
 
-    return _adjust_explanation_verbosity(base_messages[grade], grade)
 
-
-def _adjust_explanation_verbosity(explanation: str, grade: MoveGrade) -> str:
-    """
-    Adjust explanation detail level based on adaptive mode.
-    
-    learning: Full detail with chess principles
-    easy:     Moderate detail with hints
-    medium:   Standard detail
-    hard:     Concise, expert-level
-    """
-    mode = get_current_mode()
-
-    # Good moves stay concise regardless
+def _adjust_explanation_verbosity(explanation: str, grade: MoveGrade, effective_mode: Optional[str] = None) -> str:
+    mode = effective_mode if effective_mode else get_current_mode()
     if grade >= MoveGrade.GOOD:
         if mode == "hard":
             return explanation.split('.')[0] + '.'
         return explanation
-
-    # For errors, add educational content based on mode
     if mode == "hard":
-        # Concise for strong players
         return explanation.split('.')[0] + '.'
-
     elif mode == "medium":
-        # Standard detail
         return explanation
-
     elif mode in ("easy", "learning"):
-        # Add teaching hints for common patterns
         hints = {
-            "hanging": (
-                " 💡 Tip: Before moving a piece that's defending another, "
-                "always check if you're leaving something unprotected."
-            ),
-            "fork": (
-                " 💡 Tip: Watch for enemy knights and queens — they're the best forking pieces. "
-                "Try to keep valuable pieces on different colors/lines when possible."
-            ),
-            "pin": (
-                " 💡 Tip: Pinned pieces have very limited mobility. "
-                "You can often exploit pins by attacking the pinned piece repeatedly."
-            ),
-            "skewer": (
-                " 💡 Tip: A skewer forces a valuable piece to move, exposing a piece behind it. "
-                "When attacked, check if moving creates further problems."
-            ),
-            "king": (
-                " 💡 Tip: Your king's safety is paramount. Keep the pawn shield intact, "
-                "avoid opening files toward your king, and castle early to find safety."
-            ),
-            "center": (
-                " 💡 Tip: Control of the center (e4, d4, e5, d5) is a fundamental chess principle. "
-                "Pieces in the center control more squares and have more mobility."
-            ),
-            "material": (
-                " 💡 Tip: Material values: Pawn=1, Knight/Bishop=3, Rook=5, Queen=9. "
-                "Try to win material or at least trade equal values."
-            ),
-            "mate": (
-                " 💡 Tip: Checkmate is the ultimate goal. Before every move, check: "
-                "Can I deliver checkmate? Can my opponent?"
-            ),
-            "develop": (
-                " 💡 Tip: In the opening, develop your pieces efficiently. "
-                "Get knights and bishops out, control the center, castle early, and connect your rooks."
-            ),
+            "hanging": " 💡 Tip: Before moving a piece that's defending another, always check if you're leaving something unprotected.",
+            "fork": " 💡 Tip: Watch for enemy knights and queens — they're the best forking pieces. Try to keep valuable pieces on different colors/lines when possible.",
+            "pin": " 💡 Tip: Pinned pieces have very limited mobility. You can often exploit pins by attacking the pinned piece repeatedly.",
+            "skewer": " 💡 Tip: A skewer forces a valuable piece to move, exposing a piece behind it. When attacked, check if moving creates further problems.",
+            "king": " 💡 Tip: Your king's safety is paramount. Keep the pawn shield intact, avoid opening files toward your king, and castle early to find safety.",
+            "center": " 💡 Tip: Control of the center (e4, d4, e5, d5) is a fundamental chess principle. Pieces in the center control more squares and have more mobility.",
+            "material": " 💡 Tip: Material values: Pawn=1, Knight/Bishop=3, Rook=5, Queen=9. Try to win material or at least trade equal values.",
+            "mate": " 💡 Tip: Checkmate is the ultimate goal. Before every move, check: Can I deliver checkmate? Can my opponent?",
+            "develop": " 💡 Tip: In the opening, develop your pieces efficiently. Get knights and bishops out, control the center, castle early, and connect your rooks.",
         }
-
         lower = explanation.lower()
         for keyword, hint in hints.items():
             if keyword in lower:
@@ -892,22 +779,14 @@ def _adjust_explanation_verbosity(explanation: str, grade: MoveGrade) -> str:
                     return explanation + hint
                 elif mode == "easy" and grade <= MoveGrade.MISTAKE:
                     return explanation + hint
-
     return explanation
 
 
 # =========================================================
-# Visual Cues — Grade-colored arrows
+# Visual Cues
 # =========================================================
 
 def _grade_to_arrow_color(grade: MoveGrade) -> str:
-    """
-    Convert move grade to arrow color type.
-    Green  = Best / Excellent
-    Blue   = Good
-    Yellow = Inaccuracy
-    Red    = Mistake / Blunder
-    """
     if grade in (MoveGrade.BEST, MoveGrade.EXCELLENT):
         return "best"
     if grade == MoveGrade.GOOD:
@@ -925,25 +804,17 @@ def _generate_visual_cues(
     board_after: Optional[chess.Board],
     player_color: chess.Color,
 ) -> Optional[Dict]:
-    """
-    Generate visual feedback (arrows and highlights) based on position and explanation.
-    """
     if board_after is None:
         return None
-
     opponent = not player_color
     cues = {"arrows": [], "highlights": []}
     e = explanation.lower()
-
-    # Played move arrow — colored by grade
     arrow_type = _grade_to_arrow_color(grade)
     cues["arrows"].append({
         "from": move_played.from_square,
         "to": move_played.to_square,
         "type": arrow_type,
     })
-
-    # Best move arrow (green) when player didn't play best
     if (
         best_move
         and best_move != move_played
@@ -954,15 +825,11 @@ def _generate_visual_cues(
             "to": best_move.to_square,
             "type": "best",
         })
-
-    # Tactical pattern highlights
     if "checkmate" in e or "forced mate" in e:
         k = board_after.king(player_color)
         if k is not None:
             cues["highlights"].append({"square": k, "type": "danger"})
-
     elif "hanging" in e or "undefended" in e:
-        # Highlight hanging pieces
         for sq in chess.SQUARES:
             piece = board_after.piece_at(sq)
             if piece and piece.color == player_color and piece.piece_type != chess.KING:
@@ -970,9 +837,7 @@ def _generate_visual_cues(
                         not board_after.is_attacked_by(player_color, sq)):
                     cues["highlights"].append({"square": sq, "type": "danger"})
                     break
-
     elif "fork" in e:
-        # Show fork arrows
         for sq in chess.SQUARES:
             piece = board_after.piece_at(sq)
             if piece and piece.color == opponent:
@@ -986,9 +851,7 @@ def _generate_visual_cues(
                     for t in targets[:2]:
                         cues["arrows"].append({"from": sq, "to": t, "type": "threat"})
                     break
-
     elif "pinned" in e or "pin" in e:
-        # Highlight pinned piece
         king_sq = board_after.king(player_color)
         if king_sq is not None:
             for sq in chess.SQUARES:
@@ -999,9 +862,7 @@ def _generate_visual_cues(
                     if test.is_attacked_by(opponent, king_sq):
                         cues["highlights"].append({"square": sq, "type": "warning"})
                         break
-
     elif "skewer" in e:
-        # Highlight skewered piece
         for sq in chess.SQUARES:
             piece = board_after.piece_at(sq)
             if piece and piece.color == player_color:
@@ -1009,26 +870,21 @@ def _generate_visual_cues(
                     if board_after.is_attacked_by(opponent, sq):
                         cues["highlights"].append({"square": sq, "type": "warning"})
                         break
-
     elif "king" in e and ("shield" in e or "open" in e or "expos" in e):
-        # Highlight exposed king
         k = board_after.king(player_color)
         if k is not None:
             cues["highlights"].append({"square": k, "type": "warning"})
-
     elif "center" in e:
-        # Highlight lost center control
         for sq in CENTER_SQUARES:
             if not board_after.is_attacked_by(player_color, sq):
                 piece = board_after.piece_at(sq)
                 if piece is None or piece.color != player_color:
                     cues["highlights"].append({"square": sq, "type": "warning"})
-
     return cues if (cues["arrows"] or cues["highlights"]) else None
 
 
 # =========================================================
-# Public API
+# Public API - NOW WITH SESSION SUPPORT
 # =========================================================
 
 def assess_move(
@@ -1040,26 +896,30 @@ def assess_move(
     board_before: Optional[chess.Board] = None,
     board_after: Optional[chess.Board] = None,
     engine=None,
+    coach_session: Optional[CoachSession] = None,
+    coach_mode: Optional[str] = None,
 ) -> MoveAssessment:
     """
-    Comprehensive move assessment with tactical detection and rich feedback.
-    
-    Args:
-        move_played: The move that was played
-        eval_initial: Position evaluation before move (centipawns, white perspective)
-        eval_final: Position evaluation after move (centipawns, white perspective)
-        best_move: Engine's recommended best move
-        player_is_white: Whether the player is white
-        board_before: Board state before the move
-        board_after: Board state after the move
-        engine: Chess engine instance (optional, for future use)
-    
-    Returns:
-        MoveAssessment with grade, explanation, and visual cues
+    Comprehensive move assessment.
+    Now accepts coach_session for per-user state (fixes web-unsafe globals).
+    coach_mode overrides for explicit mode (e.g., from dropdown).
     """
     was_best = (move_played == best_move) if best_move else False
+
+    # Determine effective mode
+    if coach_session is not None:
+        if coach_mode is not None:
+            # Explicit override from caller
+            effective_mode = coach_mode if coach_mode != "adaptive" else coach_session.get_effective_mode()
+        else:
+            effective_mode = coach_session.get_effective_mode()
+    else:
+        effective_mode = coach_mode if coach_mode is not None else get_current_mode()
+        if effective_mode == "adaptive":
+            effective_mode = get_current_mode()
+
     cp_loss = _calculate_centipawn_loss(eval_initial, eval_final, player_is_white)
-    grade = _determine_grade(cp_loss, was_best)
+    grade = _determine_grade_with_mode(cp_loss, was_best, effective_mode)
 
     explanation = _build_explanation(
         move_played=move_played,
@@ -1070,6 +930,7 @@ def assess_move(
         board_before=board_before,
         board_after=board_after,
         grade=grade,
+        effective_mode=effective_mode,
     )
 
     player_color = chess.WHITE if player_is_white else chess.BLACK
@@ -1082,8 +943,11 @@ def assess_move(
         player_color=player_color,
     )
 
-    # Update adaptive mode based on performance
-    _update_adaptive_mode(grade)
+    # Update adaptive state
+    if coach_session is not None:
+        _update_adaptive_mode(grade, session=coach_session)
+    else:
+        _update_adaptive_mode(grade)
 
     return MoveAssessment(
         move_played=move_played,

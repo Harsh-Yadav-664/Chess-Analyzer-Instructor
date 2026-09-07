@@ -26,7 +26,10 @@ from instructor import (
     analyze_pre_move_threats,
     reset_adaptive_state,
     get_current_mode,
-    MoveGrade
+    set_coach_mode,
+    MoveGrade,
+    create_coach_session,
+    CoachSession
 )
 from stats import (
     start_game,
@@ -35,21 +38,22 @@ from stats import (
     get_profile_summary,
     get_training_suggestion,
     reset_profile,
-    get_session
+    get_session,
+    ProfileStore
 )
 
+# Config - now uses centralized config.py
+try:
+    from config import get_stockfish_path, PROFILE_DIR, PROFILE_FILE, ENGINE_DEPTH, ENGINE_MOVE_TIME
+    STOCKFISH_PATH = get_stockfish_path() or r"D:\CODE\PROJECTS\Chess Stockfish\stockfish\stockfish-windows-x86-64-avx2.exe"
+except ImportError:
+    STOCKFISH_PATH = r"D:\CODE\PROJECTS\Chess Stockfish\stockfish\stockfish-windows-x86-64-avx2.exe"
+    ENGINE_DEPTH = 15
+    ENGINE_MOVE_TIME = 1.0
+    PROFILE_DIR = Path.home() / ".chess_instructor"
+    PROFILE_FILE = PROFILE_DIR / "profile.json"
 
-# =========================
-# CONFIG
-# =========================
-
-STOCKFISH_PATH = r"D:\CODE\PROJECTS\Chess Stockfish\stockfish\stockfish-windows-x86-64-avx2.exe"
-ENGINE_DEPTH = 15
-ENGINE_MOVE_TIME = 1.0
-
-# Profile persistence - saved in user's home directory
-PROFILE_DIR = Path.home() / ".chess_instructor"
-PROFILE_FILE = PROFILE_DIR / "profile.json"
+profile_store = ProfileStore(PROFILE_FILE)
 
 
 # =========================
@@ -90,49 +94,28 @@ ACCENT_BLUE = QColor(59, 130, 246)
 
 
 # =========================
-# PROFILE PERSISTENCE - FIXED
+# PROFILE PERSISTENCE - CENTRALIZED via ProfileStore
 # =========================
 
 def save_profile():
-    """Save profile to persistent storage in user's home directory."""
-    try:
-        # Create directory if it doesn't exist
-        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        
-        session = get_session()
-        data = session.profile.to_dict()
-        
-        # Save with pretty formatting
-        with open(PROFILE_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
-        
+    """Save profile using centralized store (fixes duplication)."""
+    session = get_session()
+    ok = profile_store.save(session.profile)
+    if ok:
         print(f"✓ Profile saved to {PROFILE_FILE}")
-        return True
-    except Exception as e:
-        print(f"✗ Failed to save profile: {e}")
-        return False
-
+    return ok
 
 def load_profile():
-    """Load profile from persistent storage."""
-    if not PROFILE_FILE.exists():
-        print("ℹ No existing profile found, starting fresh")
-        return False
-    
-    try:
-        with open(PROFILE_FILE, 'r') as f:
-            data = json.load(f)
-        
-        from stats import PlayerProfile
-        session = get_session()
-        session.profile = PlayerProfile.from_dict(data)
-        
+    """Load profile using centralized store."""
+    session_obj = get_session()
+    loaded = profile_store.load()
+    if loaded:
+        session_obj.profile = loaded
         print(f"✓ Profile loaded from {PROFILE_FILE}")
-        print(f"  Games: {session.profile.games_played}, Moves: {session.profile.total_moves}")
+        print(f"  Games: {session_obj.profile.games_played}, Moves: {session_obj.profile.total_moves}")
         return True
-    except Exception as e:
-        print(f"✗ Failed to load profile: {e}")
-        return False
+    print("ℹ No existing profile found, starting fresh")
+    return False
 
 
 # =========================
@@ -949,6 +932,8 @@ class MainWindow(QMainWindow):
         self.undo_stack: List[str] = []
         self.redo_stack: List[str] = []
         self.game_active = False
+        # Per-game coach session (fixes global state issue)
+        self.coach_session: CoachSession = create_coach_session("adaptive")
 
         self._worker = None
         self._suggestion_worker = None
@@ -1211,15 +1196,26 @@ class MainWindow(QMainWindow):
 
     def _init_engine(self):
         try:
-            self.engine = ChessEngine(STOCKFISH_PATH, depth=ENGINE_DEPTH)
+            # Use auto-detected path if available
+            engine_path = STOCKFISH_PATH
+            try:
+                from config import get_stockfish_path
+                detected = get_stockfish_path()
+                if detected:
+                    engine_path = detected
+            except:
+                pass
+            
+            self.engine = ChessEngine(engine_path, depth=ENGINE_DEPTH)
             self.engine.start()
             self.engine.set_difficulty(self.difficulty_mode)
-            print(f"✓ Engine initialized: Stockfish")
-        except FileNotFoundError:
+            print(f"✓ Engine initialized: {engine_path}")
+        except FileNotFoundError as e:
             QMessageBox.critical(
                 self, "Engine Not Found",
-                f"Stockfish engine not found at:\n{STOCKFISH_PATH}\n\n"
-                "Please update STOCKFISH_PATH in gui.py to point to your Stockfish executable."
+                f"Stockfish engine not found.\n\nTried: {STOCKFISH_PATH}\n\n"
+                f"Please:\n1. Install Stockfish from https://stockfishchess.org/download/\n"
+                f"2. Set STOCKFISH_PATH environment variable\n3. Or place stockfish in PATH\n\nError: {e}"
             )
             self.engine = None
         except Exception as e:
@@ -1228,6 +1224,11 @@ class MainWindow(QMainWindow):
 
     def _on_instructor_mode_changed(self, mode: str):
         self.instructor_mode = mode
+        # FIX: Actually make dropdown work (was no-op before)
+        set_coach_mode(mode)
+        # Also update per-game coach session
+        if hasattr(self, 'coach_session'):
+            self.coach_session.set_instructor_mode(mode)
         self._update_status_display()
 
     def _on_difficulty_changed(self, mode: str):
@@ -1546,7 +1547,9 @@ class MainWindow(QMainWindow):
             player_is_white=self.player_is_white,
             board_before=board_before,
             board_after=board_after,
-            engine=self.engine
+            engine=self.engine,
+            coach_session=self.coach_session,
+            coach_mode=self.instructor_mode
         )
 
         record_move(assessment.grade, assessment.explanation)
@@ -1711,7 +1714,9 @@ class MainWindow(QMainWindow):
             player_is_white=False,
             board_before=board_before_engine,
             board_after=board_after_engine,
-            engine=self.engine
+            engine=self.engine,
+            coach_session=self.coach_session,
+            coach_mode=self.instructor_mode
         )
 
         self.board_widget.set_board(self.board)
@@ -1792,6 +1797,7 @@ class MainWindow(QMainWindow):
         self.undo_btn.setEnabled(False)
         self.redo_btn.setEnabled(False)
         reset_adaptive_state()
+        self.coach_session = create_coach_session(self.instructor_mode)
 
         if self.engine:
             if self.difficulty_mode == "adaptive":
